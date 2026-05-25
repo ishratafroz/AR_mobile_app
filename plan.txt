@@ -1,0 +1,46 @@
+Research Question: How can real-time diet monitoring be enhanced through a mobile augmented reality (AR) application integrated with mHealth and wearable health data to support chronic disease management?
+
+Goal 1: Design and develop a Mobile AR application for interactive real-time diet monitoring
+1. Build a Mobile AR App for Real-Time Diet Monitoring
+•	Develop a smartphone-based AR application (iOS/Android) that uses the device camera to analyze food in real time.
+•	The AR interface allows users to:
+•	Tap or point at food items on a plate
+•	Overlaying nutritional insights directly on detected items
+•	Interact with food objects in the real-world view (highlight, select, compare portions)
+•	use on-device spatial AR interaction using camera-based overlays
+2. Extract Nutritional Value and Display in AR
+•	Apply computer vision and food recognition models to identify food items from camera input.
+•	Estimate portion size and compute nutritional values using food databases (e.g., USDA Food Data Central).
+•	Display results as AR overlays:
+o	Nutritional breakdown shown directly above each food item
+o	Structured formats such as: Calories: X kcal, Protein: X g, Carbs: X g, Fat: X g
+•	Allow users to toggle detailed views (summary vs expanded nutrition panel)
+•	Computationally analyze the food plate and extract the nutritional values. 
+•	Display as a list as a <nutrition, measure> pair. 
+
+Goal 2: Integrate real-time health data from mobile phones and wearable devices for risk assessment. 
+•	Develop a mobile health integration layer that connects the AR app with: 
+•	iHealth watch smart watch or Google Fit / Wear OS devices 
+•	Collect real-time physiological and behavioral metrics such as: 
+•	Heart rate 
+•	Sleep duration/quality 
+•	Activity level (steps, calories burned) 
+•	Combine dietary intake + health metrics to compute personalized risk indicators, such as: 
+•	Cardiovascular risk flags (e.g., high saturated fat + elevated resting heart rate) 
+•	Diabetes-related alerts (e.g., high sugar intake + low activity levels) 
+•	Provide AR-based feedback: 
+•	Highlight “risky” food items in red 
+•	Suggest healthier alternatives in real time 
+•	Display risk score overlays in the camera view
+
+Goal 3: Design use cases and perform experiments in a real-world environment to measure the effectiveness of the developed system.
+●	Prepare use cases to define the scenarios such as
+○	A diabetic patient scanning meals at home or restaurants 
+○	A cardiac-risk user tracking saturated fat intake during daily meals 
+○	A fitness user optimizing macros in real time using AR feedback
+●	Conduct real-world testing to evaluate:
+○	Accuracy of food recognition and nutrition estimation
+○	User engagement and usability of AR overlays
+○	Effectiveness of risk feedback in influencing dietary decisions
+○	Integration reliability between mobile AR and wearable health data
+

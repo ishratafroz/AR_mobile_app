@@ -1,0 +1,13 @@
+rootProject.name = 'ARDietApp'
+apply from: file("../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesSettingsGradle(settings)
+include ':app'
+includeBuild('../node_modules/@react-native/gradle-plugin')
+
+include ':arcore_client'
+project(':arcore_client').projectDir = new File(rootProject.projectDir, '../node_modules/@reactvision/react-viro/android/arcore_client')
+include ':gvr_common'
+project(':gvr_common').projectDir = new File(rootProject.projectDir, '../node_modules/@reactvision/react-viro/android/gvr_common')
+include ':viro_renderer'
+project(':viro_renderer').projectDir = new File(rootProject.projectDir, '../node_modules/@reactvision/react-viro/android/viro_renderer')
+include ':react_viro'
+project(':react_viro').projectDir = new File(rootProject.projectDir, '../node_modules/@reactvision/react-viro/android/react_viro')
