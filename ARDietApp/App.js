@@ -14,9 +14,10 @@ import {
   Platform,
 } from 'react-native';
 import { ViroARSceneNavigator } from '@reactvision/react-viro';
-import { captureRef } from 'react-native-view-shot';
+import { launchCamera } from 'react-native-image-picker';
 import ARFoodScanScene from './src/scenes/ARFoodScanScene';
 import { identifyFood } from './src/services/FoodRecognition';
+import { analyzeFoodImageGemini, nutritionFromGemini } from './src/services/GeminiVision';
 import { getNutrition, getNutritionOffline } from './src/services/NutritionAPI';
 import { computeRisk, suggestAlternative } from './src/engine/RiskEngine';
 import { getHealthMetrics } from './src/services/HealthMetrics';
@@ -57,6 +58,61 @@ export default function App() {
     setScanToken(t => t + 1);
   }
 
+  // Resolve a nutrition object from a list of food-name guesses: try USDA on the
+  // top guesses (most authoritative), then the offline table. Returns null if none hit.
+  async function resolveNutritionFromGuesses(guesses) {
+    const names = guesses.map(g => g.name);
+    for (const name of names.slice(0, 5)) {
+      let nutrition = null;
+      try { nutrition = await getNutrition(name); } catch (_) {}
+      if (nutrition) { nutrition.queryName = name; return nutrition; }
+    }
+    for (const name of names.slice(0, 5)) {
+      const nutrition = getNutritionOffline(name);
+      if (nutrition) return nutrition;
+    }
+    return null;
+  }
+
+  // Attach Gemini's estimated portion to a nutrition object and compute the
+  // per-portion calories from the per-100g value.
+  function attachPortion(nutrition, gem) {
+    if (!nutrition || !gem) return nutrition;
+    if (gem.portionGrams != null) {
+      nutrition.portionGrams = Math.round(gem.portionGrams);
+      nutrition.caloriesPortion = Math.round((nutrition.calories || 0) * gem.portionGrams / 100);
+    }
+    if (gem.portionLabel) nutrition.portionLabel = gem.portionLabel;
+    return nutrition;
+  }
+
+  // Capture a real food photo for recognition.
+  // NOTE: Viro renders the camera to a GL SurfaceView that neither
+  // react-native-view-shot nor Viro's own takeScreenshot can capture on Android 13+
+  // (the latter gates on WRITE_EXTERNAL_STORAGE, which is ungrantable on API 33+).
+  // So we snap a still with the system camera instead — ARCore pauses cleanly while
+  // the camera intent is up, then resumes. Returns { base64, mimeType } or null.
+  async function captureScene() {
+    const result = await launchCamera({
+      mediaType: 'photo',
+      includeBase64: true,
+      saveToPhotos: false,
+      cameraType: 'back',
+      quality: 0.7,
+      maxWidth: 1280,
+      maxHeight: 1280,
+    });
+    if (result?.didCancel) return { cancelled: true };
+    if (result?.errorCode) {
+      throw new Error(`Camera: ${result.errorMessage || result.errorCode}`);
+    }
+    const asset = result?.assets?.[0];
+    const base64 = asset?.base64;
+    console.log('[capture] photo base64 len:', base64 ? base64.length : 0);
+    if (!base64) return null;
+    return { base64, mimeType: asset?.type || 'image/jpeg' };
+  }
+
   async function onScan() {
     if (scanning) return;
     setScanning(true);
@@ -66,51 +122,69 @@ export default function App() {
         throw new Error('AR view not ready — wait a moment then retry');
       }
 
-      // react-native-view-shot captures the rendered RN surface (camera + AR
-      // overlays). Returns base64 directly — no file:// roundtrip needed.
-      let base64;
+      let shot;
       try {
-        base64 = await captureRef(arViewRef, {
-          format: 'jpg',
-          quality: 0.5,
-          result: 'base64',
-        });
+        shot = await captureScene();
       } catch (e) {
-        console.warn('captureRef failed', e);
+        console.warn('captureScene failed', String(e?.message || e));
+        setError(`Camera capture failed: ${e?.message || e}`);
+        return;
+      }
+      if (shot?.cancelled) return; // user backed out of the camera
+      if (!shot?.base64) {
         setError('Camera capture failed — opening PICK list');
         setPickerOpen(true);
         return;
       }
-      if (!base64) {
-        setError('Empty capture — opening PICK list');
-        setPickerOpen(true);
-        return;
-      }
+      const { base64, mimeType } = shot;
 
-      let concepts;
+      // 1) Gemini multimodal: recognition + portion + per-100g estimate in one call.
+      let gem = null;
+      let gemErr = null;
       try {
-        concepts = await identifyFood(base64);
+        gem = await analyzeFoodImageGemini(base64, mimeType);
       } catch (e) {
-        throw new Error(`Vision API: ${e.message || e}`);
+        gemErr = e.message || String(e);
+        console.warn('Gemini analyze failed:', gemErr);
       }
-      if (!concepts?.length) throw new Error('No food labels detected — try PICK instead');
 
-      // try top 5 guesses in USDA until one returns nutrition data
       let nutrition = null;
-      const tried = [];
-      for (const c of concepts.slice(0, 5)) {
-        tried.push(c.name);
-        try { nutrition = await getNutrition(c.name); } catch (_) {}
-        if (nutrition) { nutrition.queryName = c.name; break; }
-      }
-      // fall back to offline table on the same guesses
-      if (!nutrition) {
-        for (const name of tried) {
-          nutrition = getNutritionOffline(name);
-          if (nutrition) break;
+      if (gem?.foods?.length) {
+        // Prefer USDA's authoritative macros, keyed on Gemini's (specific) guesses.
+        nutrition = await resolveNutritionFromGuesses(gem.foods);
+        // No USDA/offline match → use Gemini's own per-100g nutrition estimate.
+        if (!nutrition && gem.per100g) {
+          nutrition = nutritionFromGemini(gem.foods[0].name, gem.per100g);
+        }
+        if (nutrition) {
+          nutrition.recognizedBy = 'Gemini';
+          attachPortion(nutrition, gem);
         }
       }
-      if (!nutrition) throw new Error(`No nutrition match for: ${tried.join(', ')}`);
+
+      // 2) Fallback: Google Vision labels → USDA/offline.
+      //    (Vision requires billing on the GCP project; if disabled it 403s, so
+      //    Gemini is the real path and we surface its error first.)
+      if (!nutrition) {
+        let concepts = null;
+        let visionErr = null;
+        try {
+          concepts = await identifyFood(base64);
+        } catch (e) {
+          visionErr = e.message || String(e);
+        }
+        if (concepts?.length) {
+          nutrition = await resolveNutritionFromGuesses(concepts);
+          if (nutrition) nutrition.recognizedBy = 'Vision';
+        }
+        if (!nutrition) {
+          if (gemErr) throw new Error(`Gemini failed: ${gemErr}`);
+          if (concepts?.length) {
+            throw new Error(`No nutrition match for: ${concepts.slice(0, 5).map(c => c.name).join(', ')}`);
+          }
+          throw new Error(visionErr ? `Recognition failed: ${visionErr}` : 'No food detected — try PICK');
+        }
+      }
 
       await loadFood(nutrition);
     } catch (e) {
@@ -160,7 +234,10 @@ export default function App() {
           <Text style={styles.error} numberOfLines={2}>{error}</Text>
         ) : lastFood ? (
           <Text style={[styles.statusOk, { color: RISK_COLORS[lastFood.riskLevel] || '#fff' }]}>
-            {lastFood.name} • {lastFood.calories} kcal
+            {lastFood.name}
+            {lastFood.portionGrams != null
+              ? ` • ${lastFood.caloriesPortion} kcal / ${lastFood.portionGrams} g`
+              : ` • ${lastFood.calories} kcal`}
             {lastFood.gi != null ? ` • GI ${lastFood.gi}` : ''}
             {' • '}{lastFood.riskLevel.toUpperCase()}
           </Text>
@@ -261,6 +338,42 @@ export default function App() {
                     <Text style={styles.alt}>Healthier swap: {lastFood.alternative}</Text>
                   )}
                 </View>
+
+                {(lastFood.portionGrams != null || lastFood.recognizedBy) && (
+                  <>
+                    <Text style={styles.sectionTitle}>Portion (estimated)</Text>
+                    {lastFood.recognizedBy && (
+                      <View style={styles.detailRow}>
+                        <Text style={styles.detailKey}>Recognized by</Text>
+                        <Text style={styles.detailVal}>{lastFood.recognizedBy}</Text>
+                      </View>
+                    )}
+                    {lastFood.portionLabel && (
+                      <View style={styles.detailRow}>
+                        <Text style={styles.detailKey}>Estimate</Text>
+                        <Text style={styles.detailVal}>{lastFood.portionLabel}</Text>
+                      </View>
+                    )}
+                    {lastFood.portionGrams != null && (
+                      <>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailKey}>Portion size</Text>
+                          <Text style={styles.detailVal}>{lastFood.portionGrams} g</Text>
+                        </View>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailKey}>Calories (portion)</Text>
+                          <Text style={styles.detailVal}>{lastFood.caloriesPortion} kcal</Text>
+                        </View>
+                      </>
+                    )}
+                    {lastFood.nutritionSource && (
+                      <View style={styles.detailRow}>
+                        <Text style={styles.detailKey}>Nutrition source</Text>
+                        <Text style={styles.detailVal}>{lastFood.nutritionSource}</Text>
+                      </View>
+                    )}
+                  </>
+                )}
 
                 <Text style={styles.sectionTitle}>Nutrition (per 100 g)</Text>
                 {[

@@ -35,10 +35,14 @@ function NutritionPanel({ food, position }) {
   const glow  = GLOW_MAT[food.riskLevel]   || 'glowSafe';
 
   const giLine = food.gi != null ? `GI        ${food.gi} (${food.giCategory})\n` : '';
+  const portionLine = food.portionGrams != null
+    ? `Portion   ~${food.portionGrams} g (${food.caloriesPortion} kcal)\n`
+    : '';
   const text =
     `${food.name}\n` +
     `--------------------\n` +
-    `Calories  ${food.calories} kcal\n` +
+    portionLine +
+    `Calories  ${food.calories} kcal /100g\n` +
     `Protein   ${food.protein} g\n` +
     `Carbs     ${food.carbs} g\n` +
     `Sugar     ${food.sugar} g\n` +

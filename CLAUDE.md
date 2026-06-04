@@ -135,7 +135,8 @@ ARDietApp/
 │   ├── scenes/
 │   │   └── ARFoodScanScene.js      ← Viro AR scene: reticle, billboard nutrition panel
 │   ├── services/
-│   │   ├── FoodRecognition.js      ← Google Vision label/web-entity detection
+│   │   ├── FoodRecognition.js      ← Google Vision label/web-entity detection (SCAN fallback)
+│   │   ├── GeminiVision.js         ← Gemini multimodal: recognition + portion + per-100g est.
 │   │   ├── NutritionAPI.js         ← USDA lookup + offline fallback
 │   │   └── HealthMetrics.js        ← Google Fit + demo fallback (Goal 2)
 │   ├── engine/
@@ -143,7 +144,7 @@ ARDietApp/
 │   ├── data/
 │   │   └── GlycemicIndex.js        ← GI table + lookup + COMMON_FOODS list
 │   └── constants/
-│       └── APIKeys.js              ← USDA + Vision keys (populated)
+│       └── APIKeys.js              ← USDA + Vision + Gemini keys (populated)
 ├── android/                        ← manifest already has CAMERA, ARCore, INTERNET, BODY_SENSORS, ACTIVITY_RECOGNITION
 └── ios/                            ← scaffold only; not built
 ```
@@ -160,8 +161,23 @@ ARDietApp/
   plane detection.
 - **PICK flow**: search/select from ~140 GI-tabled foods → USDA lookup (with offline
   fallback) → risk engine → AR panel + bottom-bar summary + details modal.
-- **SCAN flow**: AR-scene screenshot → Google Vision labels → top-5 USDA lookups
-  (then offline fallback) → risk engine → AR panel.
+- **SCAN flow (Gemini-first)**: `captureScene()` snaps a still via
+  `react-native-image-picker` `launchCamera` (NOT an AR screenshot — see note below) →
+  `GeminiVision.analyzeFoodImageGemini` returns specific food guesses + estimated portion
+  (grams + human label) + per-100g nutrition in one structured-JSON call → top guesses
+  tried in USDA (authoritative macros), then offline table, then Gemini's own per-100g
+  estimate (`nutritionFromGemini`) → risk engine → AR panel. Estimated portion (grams +
+  per-portion kcal) is shown on the AR panel, bottom bar, and Details modal
+  ("Portion (estimated)" section, incl. `recognizedBy`).
+
+  > **Why a photo intent instead of an AR-frame screenshot:** Viro renders the camera to
+  > a GL `SurfaceView`. `react-native-view-shot`/`captureRef` returns an all-black frame
+  > over it, and Viro's own `takeScreenshot` gates on `WRITE_EXTERNAL_STORAGE`
+  > (`errorCode 1`), which is ungrantable on Android 13+/targetSdk 33 and manifest-capped
+  > at API 28. Both made Gemini receive a black image → "no food". `launchCamera` sidesteps
+  > all of this (ARCore pauses while the camera intent is up, then resumes).
+  > The legacy Google **Vision** fallback is effectively dead: its key 403s with
+  > `BILLING_DISABLED` on GCP project #28587994639. Gemini is the working recognition path.
 - **Details modal**: full per-100g nutrition table, GI line, **Wearable/mHealth section**
   showing source/HR/steps/sleep and the risk reasons fed into the engine.
 - **Risk engine**: FSA cardiovascular thresholds + GI-based diabetes flag + wearable
@@ -192,8 +208,10 @@ A real device is required — emulators don't expose ARCore.
 ### What's still mocked or open
 - iOS HealthKit bridge: file exists in planning (`files/HealthKitService.js`) but not
   wired into `services/HealthMetrics.js`.
-- Portion estimation: `PortionEstimator` exists in `files/` but live app uses USDA's
-  per-100g values directly (no portion override yet).
+- Portion estimation: now done by Gemini on the SCAN path (visual estimate → grams +
+  per-portion kcal, shown in AR panel / bottom bar / Details). The PICK path still uses
+  USDA per-100g only (no portion). `files/PortionEstimator.js` (geometry-based) remains
+  unused.
 - Multi-food per plate: live scene shows one panel per scan. Multi-region detection +
   per-item panels remain a stretch goal — see `files/ARFoodScanScene.js` for the
   intended architecture.
@@ -206,6 +224,7 @@ A real device is required — emulators don't expose ARCore.
 | `AR scene not ready` on SCAN | wrong takeScreenshot ref path | Use the multi-shape helper in `App.js getTakeScreenshot` (already applied) |
 | Camera shows green wall, no overlays | giant ViroQuad covering plane | Use small reticle via `ViroARPlaneSelector` (already applied) |
 | `No food labels detected` | Vision returned only generic labels (food/dish/plate) | All filtered in `FoodRecognition.NON_FOOD_LABELS`; fall back to PICK |
+| `Gemini HTTP 400/403` on SCAN | AI Studio key invalid/disabled (must start with `AIza`) or model name wrong | Replace `GEMINI_API_KEY` in `APIKeys.js`; SCAN auto-falls back to Vision when Gemini fails |
 | `USDA had no match` | weird Vision label (e.g. "comfort food") | App now tries top-5 guesses, then offline table, before erroring |
 | Risk badge always "safe" on demo | wearable metrics absent | `HealthMetrics.getHealthMetrics` now always returns at least demo profile |
 
