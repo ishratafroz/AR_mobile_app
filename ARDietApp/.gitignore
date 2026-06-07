@@ -64,3 +64,10 @@ yarn-error.log
 
 # testing
 /coverage
+
+# Secrets — keep API keys out of git (use src/constants/APIKeys.example.js as template)
+src/constants/APIKeys.js
+
+# Build logs
+gradle-build*.log
+*.log

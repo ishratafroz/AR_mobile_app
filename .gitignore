@@ -1,3 +1,6 @@
 2-Ishrat-POW.docx
 app_screen.png
 ~$Ishrat-POW.docx
+
+# ppt scratch deps (regenerate with `npm install` in ppt/)
+ppt/node_modules/
