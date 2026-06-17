@@ -14,11 +14,11 @@ import {
 } from '@reactvision/react-viro';
 
 ViroMaterials.createMaterials({
-  reticle:        { diffuseColor: 'rgba(120, 220, 120, 0.55)', lightingModel: 'Constant' },
-  panelBackground:{ diffuseColor: 'rgba(0, 0, 0, 0.78)',       lightingModel: 'Constant' },
-  glowSafe:       { diffuseColor: 'rgba(80, 220, 120, 0.55)',  lightingModel: 'Constant' },
-  glowCaution:    { diffuseColor: 'rgba(255, 170, 60, 0.6)',   lightingModel: 'Constant' },
-  glowDanger:     { diffuseColor: 'rgba(230, 70, 70, 0.65)',   lightingModel: 'Constant' },
+  reticle:        { diffuseColor: 'rgba(54, 211, 153, 0.55)',  lightingModel: 'Constant' },
+  panelBackground:{ diffuseColor: 'rgba(14, 17, 22, 0.86)',    lightingModel: 'Constant' },
+  glowSafe:       { diffuseColor: 'rgba(54, 211, 153, 0.55)',  lightingModel: 'Constant' },
+  glowCaution:    { diffuseColor: 'rgba(251, 189, 35, 0.6)',   lightingModel: 'Constant' },
+  glowDanger:     { diffuseColor: 'rgba(248, 97, 122, 0.65)',  lightingModel: 'Constant' },
 });
 
 ViroAnimations.registerAnimations({
@@ -26,28 +26,35 @@ ViroAnimations.registerAnimations({
   pulseRing: { properties: { opacity: 0.25 }, easing: 'EaseInEaseOut', duration: 900, loop: true },
 });
 
-const RISK_COLOR = { safe: '#44CC44', caution: '#FFA500', danger: '#FF4444' };
+const RISK_COLOR = { safe: '#36D399', caution: '#FBBD23', danger: '#F8617A', unknown: '#8A93A6' };
 const GLOW_MAT   = { safe: 'glowSafe', caution: 'glowCaution', danger: 'glowDanger' };
+const VERDICT_COLOR = { good: '#36D399', moderate: '#FBBD23', risky: '#F8617A', avoid: '#E11D48' };
 
 // --- Panel rendered above each anchor or in front of camera ---
 function NutritionPanel({ food, position }) {
-  const color = RISK_COLOR[food.riskLevel] || '#FFFFFF';
+  const color = (food.verdict && VERDICT_COLOR[food.verdict]) || RISK_COLOR[food.riskLevel] || '#FFFFFF';
   const glow  = GLOW_MAT[food.riskLevel]   || 'glowSafe';
 
   const giLine = food.gi != null ? `GI        ${food.gi} (${food.giCategory})\n` : '';
   const portionLine = food.portionGrams != null
     ? `Portion   ~${food.portionGrams} g (${food.caloriesPortion} kcal)\n`
     : '';
-  const text =
-    `${food.name}\n` +
-    `--------------------\n` +
-    portionLine +
-    `Calories  ${food.calories} kcal /100g\n` +
-    `Protein   ${food.protein} g\n` +
-    `Carbs     ${food.carbs} g\n` +
-    `Sugar     ${food.sugar} g\n` +
-    `Fat       ${food.fat} g\n` +
-    giLine;
+  const text = food.noNutrition
+    ? `${food.name}\n` +
+      `--------------------\n` +
+      `${food.recognizedBy || 'Recognized on-device'}\n` +
+      `No offline nutrition data\n` +
+      `Open the card below to\n` +
+      `search USDA by name`
+    : `${food.name}\n` +
+      `--------------------\n` +
+      portionLine +
+      `Calories  ${food.calories} kcal /100g\n` +
+      `Protein   ${food.protein} g\n` +
+      `Carbs     ${food.carbs} g\n` +
+      `Sugar     ${food.sugar} g\n` +
+      `Fat       ${food.fat} g\n` +
+      giLine;
 
   return (
     <ViroNode
@@ -88,9 +95,11 @@ function NutritionPanel({ food, position }) {
         }}
       />
 
-      {/* risk badge */}
+      {/* verdict / risk badge */}
       <ViroText
-        text={`${food.riskLevel === 'safe' ? 'OK' : '!'}  ${food.riskLevel.toUpperCase()} — ${food.riskMessage || ''}`}
+        text={food.verdict
+          ? `${food.verdict === 'good' ? 'OK' : '!'}  ${food.verdictLabel || ''}`
+          : `${food.riskLevel === 'safe' ? 'OK' : '!'}  ${(food.riskLevel || '').toUpperCase()} — ${food.riskMessage || ''}`}
         position={[0, -0.135, 0]}
         width={0.34}
         height={0.04}

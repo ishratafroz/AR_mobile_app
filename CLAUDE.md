@@ -110,16 +110,35 @@ hospital rooms, training-room navigation) is **not** in scope.
 
 ---
 
-## Current Implementation State (as of 2026-05-23)
+## Current Implementation State (as of 2026-06-11)
 
 ### Stack
 - **React Native 0.72.6** + **@reactvision/react-viro 2.41.6** (AR framework)
 - Android: ARCore (manifest declares `com.google.ar.core` required). iOS path follows the
   setup guide but has not been built — primary test device is a Moto G 5G.
-- Vision: **Google Cloud Vision API** (label + web detection). Keys live in
-  `ARDietApp/src/constants/APIKeys.js` (USDA + Vision; both are populated).
-- Nutrition: **USDA FoodData Central** REST API, with a small offline hardcoded table for
-  ~12 common foods in `services/NutritionAPI.js` (`getNutritionOffline`).
+- **Recognition (current): TWO on-device TFLite models** via `react-native-fast-tflite`,
+  fused in `App.js onScan`. The meal image NEVER leaves the device (privacy — required
+  this over Gemini, which sent images to Google):
+  1. **Dish CLASSIFIER — Google "AIY Vision Classifier Food V1"**
+     (`services/LocalFoodClassifier.js`, model `assets/aiy_food_V1.tflite`,
+     TF Hub/Kaggle id `google/aiy/tfLite/vision-classifier-food-v1`). MobileNet-based,
+     **2,024 food-dish vocabulary** incl. international cuisine; 224×224 input; labels in
+     `src/data/AiyFoodLabels.js`. Answers "what dish is this?"
+  2. **Box DETECTOR — SSD MobileNet (Food.AI / Open Images food classes)**
+     (`services/FoodBoxDetector.js`, model `assets/food_detect.tflite`, 16-class labelmap:
+     bread, pancake, waffle, bagel, muffin, doughnut, hamburger, pizza, sandwich, hot dog,
+     french fries, apple, orange, banana, grape). TF1 detection-API export. Answers
+     "WHERE is the food and HOW MANY items?" — drives item counting ("3 × apple") and
+     portion scaling.
+  Fusion rule: a confident box detection wins (it can count); otherwise the classifier's
+  top-K is used. `recognizedBy` shows as "On-device AI (xx%)".
+  **Legacy, no longer called by SCAN:** `LocalFoodDetector.js` (YOLOv8n COCO,
+  `assets/yolov8n_float32.tflite`), `GeminiVision.js`, `FoodRecognition.js` (Google Vision).
+- Nutrition: **fully offline table** in `services/NutritionAPI.js` (`getNutritionOffline`,
+  now ~70 foods, each with a typical `serving` for portion). SCAN uses offline only —
+  zero network calls; even the recognized food *name* stays on the phone. USDA REST is
+  still used by the **PICK** path (text-only food-name query, no image), and offered as a
+  user-triggered text search when SCAN recognizes a dish that isn't in the offline table.
 - GI lookup: curated ~100-food table in `src/data/GlycemicIndex.js` with exact-match
   + word-overlap fuzzy match.
 - Wearable: **Google Fit** via `react-native-google-fit` (Android). HealthKit (iOS)
@@ -135,16 +154,33 @@ ARDietApp/
 │   ├── scenes/
 │   │   └── ARFoodScanScene.js      ← Viro AR scene: reticle, billboard nutrition panel
 │   ├── services/
-│   │   ├── FoodRecognition.js      ← Google Vision label/web-entity detection (SCAN fallback)
-│   │   ├── GeminiVision.js         ← Gemini multimodal: recognition + portion + per-100g est.
-│   │   ├── NutritionAPI.js         ← USDA lookup + offline fallback
+│   │   ├── LocalFoodClassifier.js  ← ON-DEVICE dish classifier (AIY Food V1, 2,024 dishes) — current SCAN
+│   │   ├── FoodBoxDetector.js      ← ON-DEVICE box detector (SSD MobileNet, Food.AI) — counting/portions
+│   │   ├── LocalFoodDetector.js    ← YOLOv8 COCO detector (legacy, unused by SCAN)
+│   │   ├── FoodRecognition.js      ← Google Vision (legacy, unused by SCAN)
+│   │   ├── GeminiVision.js         ← Gemini multimodal (legacy, unused by SCAN — privacy)
+│   │   ├── NutritionAPI.js         ← offline table ~70 foods (SCAN) + USDA lookup (PICK)
 │   │   └── HealthMetrics.js        ← Google Fit + demo fallback (Goal 2)
 │   ├── engine/
 │   │   └── RiskEngine.js           ← FSA traffic-light + GI + wearable-aware escalation
+│   ├── ui/                         ← modern food-tracker UI (react-native-svg)
+│   │   ├── theme.js                ← colors, RISK colors, PROFILES (use-case modes)
+│   │   ├── Ring.js                 ← SVG calorie/macro rings + MacroBar
+│   │   ├── Sheet.js                ← shared bottom-sheet modal shell
+│   │   ├── NutritionCard.js        ← Goal 1: rings + GI + portion + summary/expanded toggle
+│   │   ├── Dashboard.js            ← Goal 1/3: daily calorie ring + macro bars + food-log timeline
+│   │   ├── HealthPanel.js          ← Goal 2: risk gauge + wearable cards + healthier swap
+│   │   └── ProfilePicker.js        ← Goal 3: Diabetic/Cardiac/Fitness/General modes
 │   ├── data/
-│   │   └── GlycemicIndex.js        ← GI table + lookup + COMMON_FOODS list
+│   │   ├── GlycemicIndex.js        ← GI table + lookup + COMMON_FOODS list
+│   │   └── AiyFoodLabels.js        ← 2,024 labels for the AIY classifier (from model metadata)
 │   └── constants/
 │       └── APIKeys.js              ← USDA + Vision + Gemini keys (populated)
+├── assets/
+│   ├── aiy_food_V1.tflite          ← dish classifier model (current SCAN)
+│   ├── food_detect.tflite          ← box detector model (current SCAN)
+│   ├── yolov8n_float32.tflite      ← YOLOv8 model (legacy)
+│   └── README_MODEL.md             ← how the models were obtained/exported
 ├── android/                        ← manifest already has CAMERA, ARCore, INTERNET, BODY_SENSORS, ACTIVITY_RECOGNITION
 └── ios/                            ← scaffold only; not built
 ```
@@ -161,28 +197,46 @@ ARDietApp/
   plane detection.
 - **PICK flow**: search/select from ~140 GI-tabled foods → USDA lookup (with offline
   fallback) → risk engine → AR panel + bottom-bar summary + details modal.
-- **SCAN flow (Gemini-first)**: `captureScene()` snaps a still via
-  `react-native-image-picker` `launchCamera` (NOT an AR screenshot — see note below) →
-  `GeminiVision.analyzeFoodImageGemini` returns specific food guesses + estimated portion
-  (grams + human label) + per-100g nutrition in one structured-JSON call → top guesses
-  tried in USDA (authoritative macros), then offline table, then Gemini's own per-100g
-  estimate (`nutritionFromGemini`) → risk engine → AR panel. Estimated portion (grams +
-  per-portion kcal) is shown on the AR panel, bottom bar, and Details modal
-  ("Portion (estimated)" section, incl. `recognizedBy`).
+- **SCAN flow (on-device, fully offline)**: `captureScene()` snaps a still via
+  `react-native-image-picker` `launchCamera` → base64 JPEG (decoded with `jpeg-js`) →
+  two TFLite models run locally via `react-native-fast-tflite`:
+  `FoodBoxDetector.detectFoodBoxes` (SSD MobileNet — boxes + item count) and
+  `LocalFoodClassifier.classifyFoodLocal` (**AIY Food V1** — top-K dish candidates).
+  Fusion: a confident box detection wins (it can count, e.g. "3 × apple" scales the
+  portion); otherwise the classifier's top dish is used → `getNutritionOffline`
+  (offline macros + typical serving portion) → risk engine → AR panel. **The image —
+  and even the recognized food name — never leaves the phone.** Portion (grams +
+  per-portion kcal) shows on the AR panel, bottom bar, and Details; `recognizedBy` =
+  "On-device AI (xx%)" with other candidates under "Also detected". If the recognized
+  dish isn't in the offline table, the card still shows name + confidence (Goal 1) and
+  offers a user-triggered USDA text search (not auto-logged).
 
-  > **Why a photo intent instead of an AR-frame screenshot:** Viro renders the camera to
-  > a GL `SurfaceView`. `react-native-view-shot`/`captureRef` returns an all-black frame
-  > over it, and Viro's own `takeScreenshot` gates on `WRITE_EXTERNAL_STORAGE`
-  > (`errorCode 1`), which is ungrantable on Android 13+/targetSdk 33 and manifest-capped
-  > at API 28. Both made Gemini receive a black image → "no food". `launchCamera` sidesteps
-  > all of this (ARCore pauses while the camera intent is up, then resumes).
-  > The legacy Google **Vision** fallback is effectively dead: its key 403s with
-  > `BILLING_DISABLED` on GCP project #28587994639. Gemini is the working recognition path.
+  > **Why on-device instead of Gemini:** Gemini sent meal photos to Google's servers — a
+  > privacy problem (esp. Goal 3 human-subjects research). TFLite runs locally, offline.
+  > The earlier YOLOv8n/COCO detector only knew 10 food classes; the AIY Food V1
+  > classifier covers 2,024 dishes, with the SSD MobileNet box detector adding
+  > localization/counting that a classifier can't do. Both model files ship in
+  > `ARDietApp/assets/` (see `assets/README_MODEL.md`). No native rebuild needed to swap
+  > a model — just replace the file and reload Metro.
+
+  > **Capture note:** still uses a photo intent, not an AR-frame screenshot — Viro renders the
+  > camera to a GL `SurfaceView` that `captureRef` reads as black, and Viro's `takeScreenshot`
+  > needs `WRITE_EXTERNAL_STORAGE` (ungrantable on Android 13+). `launchCamera` sidesteps both
+  > (ARCore pauses during the intent, then resumes).
 - **Details modal**: full per-100g nutrition table, GI line, **Wearable/mHealth section**
   showing source/HR/steps/sleep and the risk reasons fed into the engine.
 - **Risk engine**: FSA cardiovascular thresholds + GI-based diabetes flag + wearable
   escalation (HR > 90 + sat fat → caution; steps < 3000 + high glycemic load →
-  diabetes flag; sleep < 5h + sugar → caution).
+  diabetes flag; sleep < 5h + sugar → caution). Now **profile-aware** —
+  `computeRisk(nutrition, health, profile)` retunes weights/thresholds per use-case
+  (diabetic ↑sugar/GI, cardiac ↑satfat/sodium, fitness flags low protein).
+- **Modern UI (food-tracker style, `src/ui/`)**: top summary pill (mini calorie ring +
+  profile chip), tappable last-scan card, bottom action bar (Today/Pick/SCAN/Health/Profile),
+  and bottom-sheet panels: NutritionCard (rings + summary/expanded), Dashboard (daily ring +
+  macro bars + food-log timeline), HealthPanel (risk gauge + wearable cards + swap),
+  ProfilePicker (use-case modes). Daily **food log + chosen profile persist via AsyncStorage**
+  (`ARDIET_LOG_V1` keyed by date, `ARDIET_PROFILE_V1`); daily totals drive the dashboard rings.
+  New dep: **react-native-svg 13.14.0** (pinned for RN 0.72).
 
 ### Known fixes applied this session
 - `App.js onScan`: was reading `navRef.current.arSceneNavigator.takeScreenshot` which is
@@ -208,10 +262,10 @@ A real device is required — emulators don't expose ARCore.
 ### What's still mocked or open
 - iOS HealthKit bridge: file exists in planning (`files/HealthKitService.js`) but not
   wired into `services/HealthMetrics.js`.
-- Portion estimation: now done by Gemini on the SCAN path (visual estimate → grams +
-  per-portion kcal, shown in AR panel / bottom bar / Details). The PICK path still uses
-  USDA per-100g only (no portion). `files/PortionEstimator.js` (geometry-based) remains
-  unused.
+- Portion estimation: SCAN uses the offline table's typical `serving` grams, scaled by
+  the box detector's item count ("3 × apple"). No visual size estimation yet. The PICK
+  path still uses USDA per-100g only (no portion). `files/PortionEstimator.js`
+  (geometry-based) remains unused.
 - Multi-food per plate: live scene shows one panel per scan. Multi-region detection +
   per-item panels remain a stretch goal — see `files/ARFoodScanScene.js` for the
   intended architecture.
@@ -223,8 +277,11 @@ A real device is required — emulators don't expose ARCore.
 |---|---|---|
 | `AR scene not ready` on SCAN | wrong takeScreenshot ref path | Use the multi-shape helper in `App.js getTakeScreenshot` (already applied) |
 | Camera shows green wall, no overlays | giant ViroQuad covering plane | Use small reticle via `ViroARPlaneSelector` (already applied) |
-| `No food labels detected` | Vision returned only generic labels (food/dish/plate) | All filtered in `FoodRecognition.NON_FOOD_LABELS`; fall back to PICK |
-| `Gemini HTTP 400/403` on SCAN | AI Studio key invalid/disabled (must start with `AIza`) or model name wrong | Replace `GEMINI_API_KEY` in `APIKeys.js`; SCAN auto-falls back to Vision when Gemini fails |
-| `USDA had no match` | weird Vision label (e.g. "comfort food") | App now tries top-5 guesses, then offline table, before erroring |
+| `On-device food model failed to load` | `assets/aiy_food_V1.tflite` missing/corrupt | Restore the model file (see `assets/README_MODEL.md`); reload Metro — no native rebuild |
+| `No food recognized on-device` | both box detector and classifier below confidence threshold | Retake with a clearer/closer shot, or use PICK |
+| Scanned dish shows "Not in the offline nutrition table" | AIY recognized a dish outside the ~70-food offline table | Expected: card still shows name+confidence and offers user-triggered USDA text search |
+| `No food labels detected` *(legacy Vision path)* | Vision returned only generic labels (food/dish/plate) | All filtered in `FoodRecognition.NON_FOOD_LABELS`; fall back to PICK |
+| `Gemini HTTP 400/403` *(legacy Gemini path)* | AI Studio key invalid/disabled (must start with `AIza`) or model name wrong | Replace `GEMINI_API_KEY` in `APIKeys.js` — but SCAN no longer calls Gemini |
+| `USDA had no match` (PICK) | odd food-name query | App tries USDA, then offline table, before erroring |
 | Risk badge always "safe" on demo | wearable metrics absent | `HealthMetrics.getHealthMetrics` now always returns at least demo profile |
 
