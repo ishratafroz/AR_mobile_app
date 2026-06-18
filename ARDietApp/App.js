@@ -24,7 +24,7 @@ import ARFoodScanScene from './src/scenes/ARFoodScanScene';
 import { classifyFoodLocal } from './src/services/LocalFoodClassifier';
 import { detectFoodBoxes } from './src/services/FoodBoxDetector';
 import { classifyProduceLocal } from './src/services/LocalProduceClassifier';
-import { getNutrition, getNutritionOffline, OFFLINE_FOODS } from './src/services/NutritionAPI';
+import { getNutrition, getNutritionOffline, OFFLINE_FOODS, applyPortion } from './src/services/NutritionAPI';
 import { assessForUser } from './src/engine/RiskEngine';
 import { getHealthMetrics } from './src/services/HealthMetrics';
 import { COMMON_FOODS } from './src/data/GlycemicIndex';
@@ -36,10 +36,10 @@ import { Dashboard } from './src/ui/Dashboard';
 import { HealthPanel } from './src/ui/HealthPanel';
 import { HealthIntake, EMPTY_USER } from './src/ui/HealthIntake';
 import { ConfirmFood } from './src/ui/ConfirmFood';
-
-const LOG_KEY = 'ARDIET_LOG_V1';
-const PROFILE_KEY = 'ARDIET_PROFILE_V1';   // legacy (focus only) — migrated to USER_KEY
-const USER_KEY = 'ARDIET_USER_V1';
+import { Login } from './src/ui/Login';
+import {
+  getSession, getAccountUser, updateAccountUser, signOut, logKeyFor,
+} from './src/services/Accounts';
 
 // Foods the confirm/correct search can offer (resolve to on-device nutrition or GI).
 const SEARCH_FOODS = Array.from(new Set([...OFFLINE_FOODS, ...COMMON_FOODS])).sort();
@@ -90,15 +90,36 @@ function mergeCandidates(boxes, cls, produce = []) {
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const nowTime = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-// Scale per-100g macros to what was actually eaten.
+// Portion multipliers the user can pick in the nutrition card.
+const PORTION_STEPS = [0.5, 1, 1.5, 2, 3];
+
+// Rough initial portion guess from the detected box area (fraction of the frame).
+// Only a seed — the user adjusts it. Skipped when item-count already scales the
+// portion (count > 1), to avoid double-counting size × count.
+function seedMultFromArea(areaFrac) {
+  if (!areaFrac) return 1;
+  if (areaFrac < 0.08) return 0.5;
+  if (areaFrac < 0.20) return 1;
+  if (areaFrac < 0.35) return 1.5;
+  return 2;
+}
+
+function portionLabelOf(food) {
+  const parts = [`${food.portionGrams} g`];
+  if (food.countDetected > 1) parts.unshift(`${food.countDetected} items`);
+  return parts.join(' · ');
+}
+
+// Scale per-100g macros to what was actually eaten (prefers explicit per-portion
+// fields from applyPortion; falls back to scaling by grams).
 function computeConsumed(food) {
   const g = food.portionGrams;
   const f = g != null ? g / 100 : 1;
   return {
     calories: food.caloriesPortion != null ? food.caloriesPortion : Math.round((food.calories || 0) * f),
-    protein: Math.round((food.protein || 0) * f),
-    carbs: Math.round((food.carbs || 0) * f),
-    fat: Math.round((food.fat || 0) * f),
+    protein: Math.round(food.proteinPortion != null ? food.proteinPortion : (food.protein || 0) * f),
+    carbs: Math.round(food.carbsPortion != null ? food.carbsPortion : (food.carbs || 0) * f),
+    fat: Math.round(food.fatPortion != null ? food.fatPortion : (food.fat || 0) * f),
   };
 }
 
@@ -115,6 +136,9 @@ export default function App() {
   const [user, setUser] = useState(EMPTY_USER);
   const [log, setLog] = useState([]); // today's entries
 
+  const [authUser, setAuthUser] = useState(null); // signed-in username, or null
+  const [booting, setBooting] = useState(true);   // restoring session on launch
+
   const [pickerOpen, setPickerOpen] = useState(false);
   const [cardOpen, setCardOpen] = useState(false);
   const [dashOpen, setDashOpen] = useState(false);
@@ -127,37 +151,60 @@ export default function App() {
   const profile = user?.focus || 'general';
   const goal = Number(user?.dailyGoal) || PROFILES[profile]?.goal || 2000;
 
-  // ---- persistence ----
+  // ---- persistence (per signed-in account) ----
+  async function loadUserData(username) {
+    const u = await getAccountUser(username);
+    setUser({ ...EMPTY_USER, ...(u || {}) });
+    try {
+      const raw = await AsyncStorage.getItem(logKeyFor(username));
+      const parsed = raw ? JSON.parse(raw) : null;
+      setLog(parsed?.date === todayStr() && Array.isArray(parsed.items) ? parsed.items : []);
+    } catch (_) { setLog([]); }
+  }
+
+  // Wearable/health metrics — only fetched once a user is signed in, so the
+  // Google Fit account prompt never appears before login.
+  function refreshHealth() {
+    getHealthMetrics().then(setHealth).catch(() => {});
+  }
+
   useEffect(() => {
     (async () => {
       try {
-        const rawUser = await AsyncStorage.getItem(USER_KEY);
-        if (rawUser) {
-          setUser({ ...EMPTY_USER, ...JSON.parse(rawUser) });
-        } else {
-          // migrate legacy focus-only profile
-          const p = await AsyncStorage.getItem(PROFILE_KEY);
-          if (p && PROFILES[p]) setUser({ ...EMPTY_USER, focus: p, dailyGoal: PROFILES[p].goal });
-        }
-        const raw = await AsyncStorage.getItem(LOG_KEY);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed?.date === todayStr() && Array.isArray(parsed.items)) setLog(parsed.items);
-        }
+        const sess = await getSession();
+        if (sess) { setAuthUser(sess); await loadUserData(sess); refreshHealth(); }
       } catch (_) {}
+      setBooting(false);
     })();
-    getHealthMetrics().then(setHealth).catch(() => {});
   }, []);
 
+  // Called by the Login screen on successful sign-in / sign-up.
+  async function onAuthed(username, _user, isSignup) {
+    setAuthUser(username);
+    await loadUserData(username);
+    refreshHealth();
+    if (isSignup) setIntakeOpen(true); // prompt new users to fill their profile
+  }
+
+  async function onLogout() {
+    await signOut();
+    setAuthUser(null);
+    setUser(EMPTY_USER);
+    setLog([]);
+    setLastFood(null);
+    setIntakeOpen(false);
+  }
+
   function persistLog(items) {
-    AsyncStorage.setItem(LOG_KEY, JSON.stringify({ date: todayStr(), items })).catch(() => {});
+    if (!authUser) return;
+    AsyncStorage.setItem(logKeyFor(authUser), JSON.stringify({ date: todayStr(), items })).catch(() => {});
   }
   function saveUser(next) {
     setUser(next);
-    AsyncStorage.setItem(USER_KEY, JSON.stringify(next)).catch(() => {});
+    if (authUser) updateAccountUser(authUser, next);
     if (lastFood && !lastFood.noNutrition) {
       // re-assess the currently shown food under the updated profile
-      const assess = assessForUser(lastFood, health, next);
+      const assess = assessForUser(lastFood, health, next, { caloriesToday: totals.calories, goal });
       setLastFood({ ...lastFood, ...assess });
     }
   }
@@ -176,13 +223,15 @@ export default function App() {
     if (!nutrition) throw new Error('No nutrition data');
     const h = health || (await getHealthMetrics().catch(() => null));
     if (h && !health) setHealth(h);
-    const assess = assessForUser(nutrition, h, user);
-    const food = { ...nutrition, ...assess, health: h };
+    // History so far today → lets the verdict speak to the user's running total.
+    const assess = assessForUser(nutrition, h, user, { caloriesToday: totals.calories, goal });
+    const id = `${Date.now()}`;
+    const food = { ...nutrition, ...assess, health: h, logId: id };
     setLastFood(food);
     setScanToken(t => t + 1);
 
     const entry = {
-      id: `${Date.now()}`,
+      id,
       name: food.name,
       consumed: computeConsumed(food),
       riskLevel: food.riskLevel,
@@ -193,6 +242,34 @@ export default function App() {
       const next = [entry, ...prev];
       persistLog(next);
       return next;
+    });
+  }
+
+  // User adjusts the portion in the card → rescale macros/GL, re-assess against
+  // the day, and update the matching log entry.
+  function changePortion(mult) {
+    if (!lastFood || lastFood.noNutrition) return;
+    const base = lastFood.baseGrams != null ? lastFood.baseGrams : (lastFood.portionGrams || 100);
+    const count = lastFood.countDetected || 1;
+    const portion = applyPortion(lastFood, base * count * mult);
+    const resized = { ...lastFood, sizeMult: mult, ...portion };
+    resized.portionLabel = portionLabelOf(resized);
+
+    // Budget excludes this item's current calories so the projection is correct.
+    const others = log.filter(e => e.id !== lastFood.logId);
+    const caloriesToday = others.reduce((a, e) => a + e.consumed.calories, 0);
+    const assess = assessForUser(resized, health, user, { caloriesToday, goal });
+    const next = { ...resized, ...assess };
+    setLastFood(next);
+
+    setLog(prev => {
+      const nextLog = prev.map(e =>
+        e.id === lastFood.logId
+          ? { ...e, consumed: computeConsumed(next), riskLevel: next.riskLevel }
+          : e
+      );
+      persistLog(nextLog);
+      return nextLog;
     });
   }
 
@@ -254,8 +331,13 @@ export default function App() {
       // signals are prioritized. The user confirms (or corrects) the guess in
       // the next step, the reliable fix for on-device misclassification.
       const candidates = mergeCandidates(boxes, cls, produce);
-      const boxCounts = {};
-      boxes.forEach(b => { const k = b.name.toLowerCase(); boxCounts[k] = (boxCounts[k] || 0) + 1; });
+      // Per-food item count + how much of the frame it fills (for portion seeding).
+      const boxCounts = {}, boxAreas = {};
+      boxes.forEach(b => {
+        const k = b.name.toLowerCase();
+        boxCounts[k] = (boxCounts[k] || 0) + 1;
+        boxAreas[k] = (boxAreas[k] || 0) + (b.box ? b.box.w * b.box.h : 0);
+      });
 
       if (!candidates.length) {
         setError('No food recognized on-device — try a clearer shot or use Pick');
@@ -263,7 +345,7 @@ export default function App() {
       }
 
       // Open the confirm/correct step. Nothing is logged until the user confirms.
-      setPending({ candidates, photoUri: shot.uri, boxCounts });
+      setPending({ candidates, photoUri: shot.uri, boxCounts, boxAreas });
       setConfirmOpen(true);
     } catch (e) {
       setError(String(e.message || e));
@@ -276,7 +358,8 @@ export default function App() {
   async function onConfirmFood(name) {
     setConfirmOpen(false);
     const photoUri = pending?.photoUri || null;
-    const count = pending?.boxCounts?.[name.toLowerCase()] || 0;
+    const rawCount = pending?.boxCounts?.[name.toLowerCase()] || 0;
+    const areaFrac = pending?.boxAreas?.[name.toLowerCase()] || 0;
     setPending(null);
     setScanning(true);
     setError(null);
@@ -303,14 +386,20 @@ export default function App() {
       nutrition.recognizedBy = 'Confirmed by you';
       nutrition.photoUri = photoUri;
 
-      // Item count from the box detector: "3 × apple" scales the portion.
-      if (count > 1 && nutrition.portionGrams != null) {
-        nutrition.countDetected = count;
-        nutrition.name = `${count} × ${nutrition.name}`;
-        nutrition.portionGrams = nutrition.portionGrams * count;
-        nutrition.caloriesPortion = Math.round((nutrition.calories || 0) * nutrition.portionGrams / 100);
-        nutrition.portionLabel = `${count} items (~${nutrition.portionGrams} g)`;
-      }
+      // Portion model: typical serving (baseGrams) × detected count × size
+      // multiplier. The multiplier is seeded from the detected box area, then the
+      // user fine-tunes it in the card. Macros/GL recompute from the grams.
+      const baseGrams = nutrition.portionGrams != null ? nutrition.portionGrams : 100;
+      const count = Math.max(1, rawCount);
+      const sizeMult = count > 1 ? 1 : seedMultFromArea(areaFrac);
+
+      nutrition.baseGrams = baseGrams;
+      nutrition.countDetected = count;
+      nutrition.sizeMult = sizeMult;
+      if (count > 1) nutrition.name = `${count} × ${nutrition.name}`;
+
+      Object.assign(nutrition, applyPortion(nutrition, baseGrams * count * sizeMult));
+      nutrition.portionLabel = portionLabelOf(nutrition);
 
       await loadFood(nutrition);
       setCardOpen(true);
@@ -353,6 +442,10 @@ export default function App() {
   const risk = lastFood ? (RISK[lastFood.riskLevel] || RISK.safe) : null;
   const verdict = lastFood?.verdict ? VERDICT[lastFood.verdict] : null;
   const prof = PROFILES[profile];
+
+  // Gate the whole app behind sign-in (accounts are local/on-device).
+  if (booting) return <View style={styles.container} />;
+  if (!authUser) return <Login onAuthed={onAuthed} />;
 
   return (
     <View style={styles.container}>
@@ -424,13 +517,15 @@ export default function App() {
       <NutritionCard
         visible={cardOpen} food={lastFood} onClose={() => setCardOpen(false)}
         onFindNutrition={(name) => { setCardOpen(false); onPickFood(name); }}
+        portionSteps={PORTION_STEPS}
+        onPortionChange={changePortion}
       />
       <Dashboard
         visible={dashOpen} onClose={() => setDashOpen(false)}
         totals={totals} goal={goal} log={log} profileLabel={prof.label} onClear={clearLog}
       />
       <HealthPanel visible={healthOpen} onClose={() => setHealthOpen(false)} health={health} food={lastFood} />
-      <HealthIntake visible={intakeOpen} onClose={() => setIntakeOpen(false)} user={user} onSave={saveUser} />
+      <HealthIntake visible={intakeOpen} onClose={() => setIntakeOpen(false)} user={user} onSave={saveUser} username={authUser} onLogout={onLogout} />
       <ConfirmFood
         visible={confirmOpen}
         candidates={pending?.candidates || []}

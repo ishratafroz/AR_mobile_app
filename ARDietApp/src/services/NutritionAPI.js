@@ -130,6 +130,36 @@ const HARDCODED = {
 // Names that resolve to on-device nutrition (used by the confirm/correct search).
 export const OFFLINE_FOODS = Object.keys(HARDCODED).sort();
 
+const r1 = (n) => Math.round(n * 10) / 10;
+
+// Scale per-100g macros to a concrete portion (grams) and derive glycemic LOAD
+// (GI × available carbs in the portion / 100). Pure — recompute whenever the
+// portion changes. Note: the per-100g macros themselves are a database lookup,
+// not measured from the image; this just scales them to the chosen portion.
+export function applyPortion(food, grams) {
+  const g = Math.max(0, Math.round(grams || 0));
+  const f = g / 100;
+  const carbsP = r1((food.carbs || 0) * f);
+  return {
+    portionGrams: g,
+    caloriesPortion: Math.round((food.calories || 0) * f),
+    proteinPortion: r1((food.protein || 0) * f),
+    carbsPortion: carbsP,
+    fatPortion: r1((food.fat || 0) * f),
+    sugarPortion: r1((food.sugar || 0) * f),
+    sodiumPortion: Math.round((food.sodium || 0) * f),
+    glycemicLoad: food.gi != null ? Math.round((food.gi * carbsP) / 100) : null,
+  };
+}
+
+// low <10, medium 10–19, high ≥20 (standard glycemic-load bands)
+export function glCategory(gl) {
+  if (gl == null) return null;
+  if (gl < 10) return 'low';
+  if (gl < 20) return 'medium';
+  return 'high';
+}
+
 export function getNutritionOffline(foodName) {
   const key = foodName.toLowerCase().trim();
   let base = HARDCODED[key];

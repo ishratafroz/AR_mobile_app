@@ -116,6 +116,46 @@ export function bmiOf(user) {
   return Math.round((w / Math.pow(h / 100, 2)) * 10) / 10;
 }
 
+// Interpret the user's last vitals/labs (fasting glucose, BP, resting pulse) into
+// clinical categories + risk flags. Thresholds follow common clinical cutoffs
+// (ADA fasting glucose; ACC/AHA blood pressure). Returns safe defaults if blank.
+export function assessClinical(user) {
+  const out = {
+    glucoseCat: null, bpCat: null, pulseCat: null,
+    diabetesRisk: false, hypertensionRisk: false, tachy: false,
+  };
+  if (!user) return out;
+
+  const g = Number(user.glucose);
+  if (g) {
+    if (g >= 126)      { out.glucoseCat = 'diabetic range';    out.diabetesRisk = true; }
+    else if (g >= 100) { out.glucoseCat = 'prediabetic range'; out.diabetesRisk = true; }
+    else               { out.glucoseCat = 'normal'; }
+  }
+
+  const sys = Number(user.bpSystolic), dia = Number(user.bpDiastolic);
+  if (sys || dia) {
+    if (sys >= 140 || dia >= 90)      { out.bpCat = 'stage 2 hypertension'; out.hypertensionRisk = true; }
+    else if (sys >= 130 || dia >= 80) { out.bpCat = 'stage 1 hypertension'; out.hypertensionRisk = true; }
+    else if (sys >= 120)              { out.bpCat = 'elevated'; }
+    else                              { out.bpCat = 'normal'; }
+  }
+
+  const p = Number(user.pulse);
+  if (p) {
+    if (p > 100)     { out.pulseCat = 'elevated'; out.tachy = true; }
+    else if (p < 50) { out.pulseCat = 'low'; }
+    else             { out.pulseCat = 'normal'; }
+  }
+  return out;
+}
+
+const LEVELS = ['safe', 'caution', 'danger'];
+function escalate(level, steps = 1) {
+  const i = LEVELS.indexOf(level);
+  return LEVELS[Math.min(LEVELS.length - 1, Math.max(0, i + steps))];
+}
+
 // Returns the list of the user's allergens that this food appears to contain.
 export function matchAllergens(nutrition, allergies) {
   if (!allergies || !allergies.length || !nutrition) return [];
@@ -136,6 +176,46 @@ const VERDICT = {
   avoid:    { key: 'avoid',    label: 'AVOID' },
 };
 
+// ---------------------------------------------------------------------------
+// NUTRITION QUALITY — "is this nutritious enough?" (separate from health RISK).
+// A food can be low-RISK but not NUTRITIOUS (white rice: safe yet mostly empty),
+// or nutrient-dense (lentils, salmon). We score nutrient density per 100 g:
+// protein + fiber count for, sugar + saturated fat + sodium count against, and a
+// calorie-dense item with little protein/fiber is flagged as "empty calories".
+export function assessNutritionQuality(n) {
+  if (!n) return { qualityScore: 0, qualityLabel: 'Unknown', qualityTone: 'low', nutritious: false, qualityNote: '' };
+  let q = 0;
+  const good = [], bad = [];
+
+  if (n.protein >= 10)      { q += 2; good.push('protein'); }
+  else if (n.protein >= 5)  { q += 1; }
+  if (n.fiber >= 5)         { q += 2; good.push('fiber'); }
+  else if (n.fiber >= 2.5)  { q += 1; good.push('fiber'); }
+
+  if (n.sugar >= 22.5)         { q -= 2; bad.push('sugar'); }
+  else if (n.sugar >= 10)      { q -= 1; }
+  if (n.saturatedFat >= 5)     { q -= 2; bad.push('saturated fat'); }
+  if (n.sodium >= 600)         { q -= 1; bad.push('sodium'); }
+
+  // calorie-dense but nutrient-poor → "empty calories"
+  const emptyCal = n.calories >= 250 && n.protein < 5 && n.fiber < 2;
+  if (emptyCal) { q -= 1; bad.push('little protein or fiber'); }
+
+  let qualityLabel, qualityTone;
+  if (q >= 3)       { qualityLabel = 'Nutritious';            qualityTone = 'good'; }
+  else if (q >= 1)  { qualityLabel = 'Moderately nutritious'; qualityTone = 'ok'; }
+  else if (q >= -1) { qualityLabel = 'Low nutrition';         qualityTone = 'low'; }
+  else              { qualityLabel = 'Empty calories';        qualityTone = 'poor'; }
+
+  let qualityNote;
+  if (good.length && q >= 1) qualityNote = `Good source of ${good.join(' & ')}.`;
+  else if (emptyCal)         qualityNote = 'Calorie-dense with little protein or fiber — not very nourishing.';
+  else if (bad.length)       qualityNote = `Light on nutrients; watch the ${bad.join(' & ')}.`;
+  else                       qualityNote = 'Modest nutritional value.';
+
+  return { qualityScore: q, qualityLabel, qualityTone, nutritious: q >= 1, qualityNote };
+}
+
 // Maps the existing safe/caution/danger riskLevel into a personalized verdict.
 function verdictFromRisk(riskLevel) {
   if (riskLevel === 'safe') return VERDICT.good;
@@ -143,8 +223,10 @@ function verdictFromRisk(riskLevel) {
   return VERDICT.risky;
 }
 
-// Builds a one-or-two sentence personalized recommendation.
-function buildRecommendation(nutrition, base, user, allergens, alt) {
+// Builds a personalized recommendation that also reflects the user's day so far
+// (history), how nutritious the item is (quality), and the user's vitals/labs
+// (clinical).
+function buildRecommendation(nutrition, base, user, allergens, alt, history, quality, clinical) {
   if (allergens.length) {
     const list = allergens.join(' & ');
     return `Contains ${list}. You listed a ${list} allergy — do not eat this.`;
@@ -174,12 +256,39 @@ function buildRecommendation(nutrition, base, user, allergens, alt) {
     parts.push(`High saturated fat (${nutrition.saturatedFat} g) raises cholesterol.`);
   }
 
+  // Vitals/labs-specific colour (uses the numbers the user entered):
+  if (clinical) {
+    if (clinical.diabetesRisk && (nutrition.gi >= 56 || nutrition.sugar >= 10)) {
+      parts.push(`Your last fasting sugar (${user.glucose} mg/dL, ${clinical.glucoseCat}) means this high-glycemic food can push it higher.`);
+    }
+    if (clinical.hypertensionRisk && nutrition.sodium >= 400) {
+      parts.push(`Your last BP (${user.bpSystolic}/${user.bpDiastolic}, ${clinical.bpCat}) plus this ${nutrition.sodium} mg sodium is a concern — choose lower-salt.`);
+    }
+    if (clinical.tachy && nutrition.saturatedFat >= 5) {
+      parts.push(`Your resting pulse (${user.pulse} bpm) is elevated; go easy on this saturated-fat-heavy item.`);
+    }
+  }
+
+  // Is it nutritious enough? (quality is independent of risk)
+  if (quality && quality.qualityNote) parts.push(quality.qualityNote);
+
   // Weight-aware nudge: an overweight/obese user gets a portion cue on
   // calorie-dense items even when nutrient risk alone reads "safe".
   const bmi = bmiOf(user);
   const consumedCals = nutrition.caloriesPortion != null ? nutrition.caloriesPortion : nutrition.calories;
   if (bmi != null && bmi >= 25 && consumedCals != null && consumedCals >= 250) {
     parts.push(`At a BMI of ${bmi}, keep the portion modest — this is ${consumedCals} kcal.`);
+  }
+
+  // History-aware: where this item leaves the user against today's goal.
+  if (history && history.goal && consumedCals != null) {
+    const projected = Math.round((history.caloriesToday || 0) + consumedCals);
+    if (projected > history.goal) {
+      parts.push(`This pushes you to ${projected}/${history.goal} kcal — over today's goal.`);
+    } else {
+      const left = history.goal - projected;
+      parts.push(`Puts you at ${projected}/${history.goal} kcal today (${left} left).`);
+    }
   }
 
   if (base.riskLevel !== 'safe' && alt) parts.push(`Try ${alt} instead.`);
@@ -192,18 +301,44 @@ function buildRecommendation(nutrition, base, user, allergens, alt) {
  * focus), wearable signals, the user's medical conditions, and allergies into a
  * single good / moderate / risky / avoid verdict plus a recommendation string.
  */
-export function assessForUser(nutrition, healthMetrics, user) {
+// `history` (optional): { caloriesToday, goal } — the user's running daily total
+// before this item, so the recommendation can speak to their day, not just the food.
+export function assessForUser(nutrition, healthMetrics, user, history = null) {
   const mode = deriveMode(user);
-  const base = computeRisk(nutrition, healthMetrics, mode);
+  const clinical = assessClinical(user);
+
+  // Fold the user's manually-entered resting pulse into the metrics the risk
+  // engine reads, so its HR-aware rules work even without a connected wearable.
+  let metrics = healthMetrics;
+  if (user?.pulse && (!metrics || metrics.restingHeartRate == null)) {
+    metrics = { ...(metrics || {}), restingHeartRate: Number(user.pulse) };
+  }
+
+  const base = computeRisk(nutrition, metrics, mode);
+
+  // Clinical escalation: the user's own labs make a borderline food riskier.
+  if (clinical.diabetesRisk && (nutrition.gi >= 56 || nutrition.sugar >= 10)) {
+    base.diabetesFlag = true;
+    base.riskLevel = escalate(base.riskLevel, 1);
+    if (!base.reasons.includes('your blood sugar')) base.reasons.unshift('your blood sugar');
+  }
+  if (clinical.hypertensionRisk && nutrition.sodium >= 400) {
+    base.riskLevel = escalate(base.riskLevel, 1);
+    if (!base.reasons.includes('your blood pressure')) base.reasons.unshift('your blood pressure');
+  }
+
   const allergens = matchAllergens(nutrition, user?.allergies);
   const alt = suggestAlternative(nutrition?.queryName || nutrition?.name, base.riskLevel);
+  const quality = assessNutritionQuality(nutrition);
 
   const v = allergens.length ? VERDICT.avoid : verdictFromRisk(base.riskLevel);
-  const recommendation = buildRecommendation(nutrition, base, user, allergens, alt);
+  const recommendation = buildRecommendation(nutrition, base, user, allergens, alt, history, quality, clinical);
 
   return {
     ...base,
+    ...quality,
     mode,
+    clinical,
     allergens,
     alternative: alt,
     verdict: v.key,

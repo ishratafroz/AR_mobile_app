@@ -3,11 +3,15 @@ import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Image } from 'rea
 import { Sheet } from './Sheet';
 import { Ring, MacroRing } from './Ring';
 import { C, RISK, VERDICT } from './theme';
+import { glCategory } from '../services/NutritionAPI';
 
 // rough per-meal reference targets for the macro rings
 const MEAL = { protein: 40, carbs: 75, fat: 25 };
 
-export function NutritionCard({ visible, food, onClose, onFindNutrition }) {
+// "is this nutritious?" tone → color
+const QUALITY_COLOR = { good: C.green, ok: C.teal, low: C.amber, poor: C.red };
+
+export function NutritionCard({ visible, food, onClose, onFindNutrition, portionSteps = [0.5, 1, 1.5, 2], onPortionChange }) {
   const [expanded, setExpanded] = useState(false);
   if (!food) return null;
 
@@ -16,6 +20,17 @@ export function NutritionCard({ visible, food, onClose, onFindNutrition }) {
   const accent = verdict ? verdict.color : risk.color;
   const kcal = food.caloriesPortion != null ? food.caloriesPortion : food.calories;
   const portionNote = food.portionGrams != null ? `${food.portionGrams} g portion` : 'per 100 g';
+  const qColor = QUALITY_COLOR[food.qualityTone] || C.textDim;
+
+  // Per-portion macros (scaled from the per-100g lookup). Glycemic LOAD reflects
+  // the actual portion, unlike GI which is a per-food intensity.
+  const pProtein = food.proteinPortion != null ? food.proteinPortion : food.protein;
+  const pCarbs   = food.carbsPortion   != null ? food.carbsPortion   : food.carbs;
+  const pFat     = food.fatPortion     != null ? food.fatPortion     : food.fat;
+  const gl = food.glycemicLoad;
+  const glCat = glCategory(gl);
+  const sizeMult = food.sizeMult || 1;
+  const showPortion = !!onPortionChange && food.baseGrams != null;
 
   // Recognized on-device, but no nutrition data available offline:
   // show what we saw + offer a user-triggered USDA text search.
@@ -60,6 +75,15 @@ export function NutritionCard({ visible, food, onClose, onFindNutrition }) {
           </View>
         )}
 
+        {/* nutrition quality — "is this nourishing enough?" (separate from risk) */}
+        {food.qualityLabel && (
+          <View style={s.qualityRow}>
+            <View style={[s.qualityDot, { backgroundColor: qColor }]} />
+            <Text style={[s.qualityLabel, { color: qColor }]}>{food.qualityLabel}</Text>
+            {food.qualityNote ? <Text style={s.qualityNote} numberOfLines={2}>{food.qualityNote}</Text> : null}
+          </View>
+        )}
+
         {/* allergy alert */}
         {food.allergens?.length > 0 && (
           <View style={[s.flag, { borderColor: C.red, backgroundColor: C.red + '1A' }]}>
@@ -81,21 +105,48 @@ export function NutritionCard({ visible, food, onClose, onFindNutrition }) {
             </View>
             <Text style={s.riskMsg}>{food.riskMessage}</Text>
             <Text style={s.portion}>{portionNote}{food.portionLabel ? ` · ${food.portionLabel}` : ''}</Text>
-            {food.gi != null && (
+            {(food.gi != null || gl != null) && (
               <View style={s.giRow}>
-                <Text style={s.giLabel}>GI</Text>
-                <Text style={s.giVal}>{food.gi}</Text>
-                <Text style={[s.giCat, giColor(food.giCategory)]}>{food.giCategory}</Text>
+                {food.gi != null && <>
+                  <Text style={s.giLabel}>GI</Text>
+                  <Text style={s.giVal}>{food.gi}</Text>
+                  <Text style={[s.giCat, giColor(food.giCategory)]}>{food.giCategory}</Text>
+                </>}
+                {gl != null && <>
+                  <Text style={[s.giLabel, { marginLeft: 14 }]}>GL</Text>
+                  <Text style={s.giVal}>{gl}</Text>
+                  <Text style={[s.giCat, giColor(glCat)]}>{glCat}</Text>
+                </>}
               </View>
             )}
           </View>
         </View>
 
-        {/* macro rings */}
+        {/* portion adjuster — the image only estimates the portion; you confirm it */}
+        {showPortion && (
+          <View style={s.portionBox}>
+            <View style={s.portionHead}>
+              <Text style={s.portionTitle}>Portion</Text>
+              <Text style={s.portionGrams}>{food.portionLabel || `${food.portionGrams} g`}</Text>
+            </View>
+            <View style={s.portionRow}>
+              {portionSteps.map(m => (
+                <TouchableOpacity key={m} style={[s.portionBtn, sizeMult === m && s.portionBtnActive]} onPress={() => onPortionChange(m)} activeOpacity={0.85}>
+                  <Text style={[s.portionBtnText, sizeMult === m && s.portionBtnTextActive]}>{m}×</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={s.portionNote}>
+              Macros are looked up from a food database and scaled to this portion — adjust to match your plate.
+            </Text>
+          </View>
+        )}
+
+        {/* macro rings (this portion) */}
         <View style={s.macros}>
-          <MacroRing label="Protein" grams={food.protein} goalGrams={MEAL.protein} color={C.protein} />
-          <MacroRing label="Carbs"   grams={food.carbs}   goalGrams={MEAL.carbs}   color={C.carbs} />
-          <MacroRing label="Fat"     grams={food.fat}     goalGrams={MEAL.fat}     color={C.fat} />
+          <MacroRing label="Protein" grams={pProtein} goalGrams={MEAL.protein} color={C.protein} />
+          <MacroRing label="Carbs"   grams={pCarbs}   goalGrams={MEAL.carbs}   color={C.carbs} />
+          <MacroRing label="Fat"     grams={pFat}     goalGrams={MEAL.fat}     color={C.fat} />
         </View>
 
         {food.diabetesFlag && (
@@ -161,6 +212,10 @@ const s = StyleSheet.create({
   verdict:  { borderWidth: 1.5, borderRadius: 14, padding: 14, marginBottom: 12 },
   verdictLabel: { fontSize: 16, fontWeight: '900', letterSpacing: 1 },
   verdictRec:   { color: C.text, fontSize: 13, lineHeight: 19, marginTop: 6 },
+  qualityRow:  { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 },
+  qualityDot:  { width: 9, height: 9, borderRadius: 5, marginRight: 8 },
+  qualityLabel:{ fontSize: 14, fontWeight: '800', marginRight: 8 },
+  qualityNote: { color: C.textDim, fontSize: 12, flex: 1, minWidth: 160 },
   hero:     { flexDirection: 'row', alignItems: 'center', marginBottom: 18 },
   kcal:     { color: C.text, fontSize: 30, fontWeight: '900' },
   kcalUnit: { color: C.textDim, fontSize: 12, marginTop: -2 },
@@ -172,6 +227,16 @@ const s = StyleSheet.create({
   giLabel:  { color: C.textFaint, fontSize: 12, fontWeight: '700', marginRight: 6 },
   giVal:    { color: C.text, fontSize: 16, fontWeight: '800', marginRight: 8 },
   giCat:    { fontSize: 12, fontWeight: '700', textTransform: 'uppercase' },
+  portionBox:  { backgroundColor: C.surface, borderRadius: 16, padding: 14, marginBottom: 14, borderWidth: 1, borderColor: C.line },
+  portionHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  portionTitle:{ color: C.text, fontSize: 14, fontWeight: '800', letterSpacing: 0.3 },
+  portionGrams:{ color: C.blue, fontSize: 14, fontWeight: '800' },
+  portionRow:  { flexDirection: 'row', gap: 8 },
+  portionBtn:  { flex: 1, paddingVertical: 9, borderRadius: 10, borderWidth: 1, borderColor: C.line, backgroundColor: C.surface2, alignItems: 'center' },
+  portionBtnActive: { backgroundColor: C.blue, borderColor: C.blue },
+  portionBtnText:   { color: C.textDim, fontSize: 14, fontWeight: '800' },
+  portionBtnTextActive: { color: '#fff' },
+  portionNote: { color: C.textFaint, fontSize: 11, marginTop: 10, lineHeight: 15 },
   macros:   { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: C.surface, borderRadius: 16, paddingVertical: 16, marginBottom: 14 },
   flag:     { borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 12 },
   flagText: { fontSize: 13, fontWeight: '600' },

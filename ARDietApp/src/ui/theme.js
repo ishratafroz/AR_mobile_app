@@ -40,6 +40,8 @@ export const VERDICT = {
 // Health-intake option lists.
 export const SEX_OPTIONS = ['male', 'female', 'other'];
 
+export const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+
 export const CONDITIONS = [
   { key: 'diabetes',     label: 'Diabetes',            icon: '🩸' },
   { key: 'hypertension', label: 'High blood pressure', icon: '🫀' },

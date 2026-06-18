@@ -1,13 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { Sheet } from './Sheet';
-import { C, PROFILES, SEX_OPTIONS, CONDITIONS, ALLERGENS } from './theme';
+import { C, PROFILES, SEX_OPTIONS, CONDITIONS, ALLERGENS, BLOOD_GROUPS } from './theme';
 
 // Full health intake (recommendation engine). Captures who the user is so the
 // good/risky verdict and recommendations can be personalized. Saved on-device.
 export const EMPTY_USER = {
+  name: '',
   age: '', sex: null, heightCm: '', weightKg: '',
   focus: 'general', conditions: [], allergies: [], dailyGoal: 2000,
+  // Vitals & labs (used by the clinical-aware recommendation layer)
+  bloodGroup: null,
+  glucose: '',        // last fasting blood sugar, mg/dL
+  bpSystolic: '',     // last measured BP, mmHg
+  bpDiastolic: '',
+  pulse: '',          // resting pulse, bpm
+  notes: '',          // anything else relevant
 };
 
 export function bmiOf(user) {
@@ -25,7 +33,9 @@ export function bmiCategory(bmi) {
   return { label: 'Obese', color: C.red };
 }
 
-export function HealthIntake({ visible, onClose, user, onSave }) {
+const num = (v) => (v === '' || v == null ? null : Number(v));
+
+export function HealthIntake({ visible, onClose, user, onSave, username, onLogout }) {
   const [form, setForm] = useState(EMPTY_USER);
 
   useEffect(() => {
@@ -49,9 +59,13 @@ export function HealthIntake({ visible, onClose, user, onSave }) {
   function save() {
     onSave({
       ...form,
-      age: form.age === '' ? null : Number(form.age),
-      heightCm: form.heightCm === '' ? null : Number(form.heightCm),
-      weightKg: form.weightKg === '' ? null : Number(form.weightKg),
+      age: num(form.age),
+      heightCm: num(form.heightCm),
+      weightKg: num(form.weightKg),
+      glucose: num(form.glucose),
+      bpSystolic: num(form.bpSystolic),
+      bpDiastolic: num(form.bpDiastolic),
+      pulse: num(form.pulse),
       dailyGoal: Number(form.dailyGoal) || (PROFILES[form.focus]?.goal ?? 2000),
     });
     onClose();
@@ -129,6 +143,47 @@ export function HealthIntake({ visible, onClose, user, onSave }) {
           ))}
         </View>
 
+        {/* vitals & labs */}
+        <Text style={s.section}>Vitals & labs</Text>
+        <Text style={s.hint}>Your latest readings sharpen the food verdict. Leave blank if unknown.</Text>
+
+        <Text style={s.lbl}>Blood group</Text>
+        <View style={s.chips}>
+          {BLOOD_GROUPS.map(bg => (
+            <Chip key={bg} label={bg} active={form.bloodGroup === bg} onPress={() => set('bloodGroup', bg)} />
+          ))}
+        </View>
+
+        <View style={[s.row, { marginTop: 12 }]}>
+          <View style={{ flex: 1, marginRight: 8 }}>
+            <Text style={s.lbl}>Blood sugar (fasting)</Text>
+            <TextInput style={s.input} value={String(form.glucose)} onChangeText={(t) => set('glucose', t.replace(/[^0-9]/g, ''))}
+              keyboardType="number-pad" placeholder="mg/dL e.g. 95" placeholderTextColor={C.textFaint} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.lbl}>Resting pulse</Text>
+            <TextInput style={s.input} value={String(form.pulse)} onChangeText={(t) => set('pulse', t.replace(/[^0-9]/g, ''))}
+              keyboardType="number-pad" placeholder="bpm e.g. 72" placeholderTextColor={C.textFaint} />
+          </View>
+        </View>
+
+        <Text style={[s.lbl, { marginTop: 12 }]}>Last measured blood pressure (mmHg)</Text>
+        <View style={s.row}>
+          <View style={{ flex: 1, marginRight: 8 }}>
+            <TextInput style={s.input} value={String(form.bpSystolic)} onChangeText={(t) => set('bpSystolic', t.replace(/[^0-9]/g, ''))}
+              keyboardType="number-pad" placeholder="Systolic e.g. 120" placeholderTextColor={C.textFaint} />
+          </View>
+          <Text style={s.bpSlash}>/</Text>
+          <View style={{ flex: 1, marginLeft: 8 }}>
+            <TextInput style={s.input} value={String(form.bpDiastolic)} onChangeText={(t) => set('bpDiastolic', t.replace(/[^0-9]/g, ''))}
+              keyboardType="number-pad" placeholder="Diastolic e.g. 80" placeholderTextColor={C.textFaint} />
+          </View>
+        </View>
+
+        <Text style={[s.lbl, { marginTop: 12 }]}>Other relevant info</Text>
+        <TextInput style={[s.input, { height: 70, textAlignVertical: 'top' }]} value={String(form.notes)} onChangeText={(t) => set('notes', t)}
+          multiline placeholder="medications, allergies not listed, family history…" placeholderTextColor={C.textFaint} />
+
         {/* daily goal */}
         <Text style={s.section}>Daily calorie goal</Text>
         <TextInput style={s.input} value={String(form.dailyGoal)} onChangeText={(t) => set('dailyGoal', t.replace(/[^0-9]/g, ''))}
@@ -137,6 +192,12 @@ export function HealthIntake({ visible, onClose, user, onSave }) {
         <TouchableOpacity style={s.saveBtn} onPress={save} activeOpacity={0.85}>
           <Text style={s.saveText}>Save profile</Text>
         </TouchableOpacity>
+
+        {onLogout && (
+          <TouchableOpacity style={s.logoutBtn} onPress={onLogout} activeOpacity={0.85}>
+            <Text style={s.logoutText}>Log out{username ? ` (${username})` : ''}</Text>
+          </TouchableOpacity>
+        )}
       </ScrollView>
     </Sheet>
   );
@@ -166,6 +227,9 @@ const s = StyleSheet.create({
   chips:   { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip:    { borderWidth: 1, borderColor: C.line, backgroundColor: C.surface, borderRadius: 20, paddingHorizontal: 13, paddingVertical: 8 },
   chipText:{ color: C.textDim, fontSize: 13, fontWeight: '600' },
+  bpSlash: { color: C.textDim, fontSize: 22, fontWeight: '800', alignSelf: 'center' },
   saveBtn: { backgroundColor: C.teal, borderRadius: 14, paddingVertical: 15, alignItems: 'center', marginTop: 24 },
   saveText:{ color: '#06281f', fontSize: 16, fontWeight: '900', letterSpacing: 0.5 },
+  logoutBtn: { borderWidth: 1, borderColor: C.line, borderRadius: 14, paddingVertical: 13, alignItems: 'center', marginTop: 12 },
+  logoutText:{ color: C.textDim, fontSize: 14, fontWeight: '700' },
 });

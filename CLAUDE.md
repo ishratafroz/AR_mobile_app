@@ -116,9 +116,9 @@ hospital rooms, training-room navigation) is **not** in scope.
 - **React Native 0.72.6** + **@reactvision/react-viro 2.41.6** (AR framework)
 - Android: ARCore (manifest declares `com.google.ar.core` required). iOS path follows the
   setup guide but has not been built — primary test device is a Moto G 5G.
-- **Recognition (current): TWO on-device TFLite models** via `react-native-fast-tflite`,
-  fused in `App.js onScan`. The meal image NEVER leaves the device (privacy — required
-  this over Gemini, which sent images to Google):
+- **Recognition (current): up to THREE on-device TFLite models** via `react-native-fast-tflite`,
+  fused in `App.js onScan` (`mergeCandidates`). The meal image NEVER leaves the device
+  (privacy — required this over Gemini, which sent images to Google):
   1. **Dish CLASSIFIER — Google "AIY Vision Classifier Food V1"**
      (`services/LocalFoodClassifier.js`, model `assets/aiy_food_V1.tflite`,
      TF Hub/Kaggle id `google/aiy/tfLite/vision-classifier-food-v1`). MobileNet-based,
@@ -130,8 +130,18 @@ hospital rooms, training-room navigation) is **not** in scope.
      french fries, apple, orange, banana, grape). TF1 detection-API export. Answers
      "WHERE is the food and HOW MANY items?" — drives item counting ("3 × apple") and
      portion scaling.
-  Fusion rule: a confident box detection wins (it can count); otherwise the classifier's
-  top-K is used. `recognizedBy` shows as "On-device AI (xx%)".
+  3. **Produce CLASSIFIER — raw fruit/vegetable model** (`services/LocalProduceClassifier.js`,
+     model `assets/produce.tflite`, labels `src/data/ProduceLabels.js`). Fills the dish
+     classifier's blind spot: AIY Food V1 has **no bare-fruit classes** (its vocab is all
+     prepared dishes — Apple pie, Banana split…), so raw produce was the accuracy gap. This
+     model is **wired but OPTIONAL** — gated behind `services/produceModelSource.js` (exports
+     `null` until you drop a model in + flip one require line). Until then it returns `[]`
+     and SCAN is unchanged. See `assets/README_MODEL.md` for how to obtain/activate.
+  Fusion (`App.js mergeCandidates`): all models merge into one ranked candidate list — none
+  auto-wins, but **raw-food signals (produce classifier + box detector) get a rank boost**
+  over the dish classifier (whose vocabulary can't emit a bare fruit), and multi-model
+  agreement boosts further. The user always confirms/corrects in the `ConfirmFood` step
+  (now with one-tap quick-pick produce chips). `recognizedBy` shows as "Confirmed by you".
   **Legacy, no longer called by SCAN:** `LocalFoodDetector.js` (YOLOv8n COCO,
   `assets/yolov8n_float32.tflite`), `GeminiVision.js`, `FoodRecognition.js` (Google Vision).
 - Nutrition: **fully offline table** in `services/NutritionAPI.js` (`getNutritionOffline`,
@@ -143,7 +153,28 @@ hospital rooms, training-room navigation) is **not** in scope.
   + word-overlap fuzzy match.
 - Wearable: **Google Fit** via `react-native-google-fit` (Android). HealthKit (iOS)
   not yet wired. If Fit is unavailable, falls back to a demo profile so the risk
-  engine always has data.
+  engine always has data. Fit is only queried AFTER login (avoids the Google account
+  prompt appearing before sign-in).
+- **Accounts & login (local, on-device — NO server):** `services/Accounts.js` +
+  `ui/Login.js`. Sign-up/login gate the whole app (`App.js` returns `<Login>` until
+  `authUser` is set). Accounts live in AsyncStorage `ARDIET_ACCOUNTS_V1` (password is
+  djb2-hashed — obfuscation for a local prototype, NOT real security; there's no backend
+  to defend). Session = `ARDIET_SESSION_V1`. Each account stores its own health profile;
+  the daily food log is per-user (`ARDIET_LOG_V1::<username>`). Logout lives in the
+  profile sheet. Health data never leaves the phone (Goal 3 privacy).
+- **Expanded health profile (`ui/HealthIntake.js`, `EMPTY_USER`):** beyond age/sex/
+  height/weight/focus/conditions/allergies/goal, now also captures **blood group,
+  fasting glucose (mg/dL), last BP (systolic/diastolic), resting pulse, and free-text
+  notes** during profile setup.
+- **Clinical-aware recommendations (`engine/RiskEngine.js`):** `assessClinical(user)`
+  interprets the entered vitals (ADA fasting-glucose cutoffs 100/126; ACC/AHA BP
+  130/80 & 140/90; pulse >100). `assessForUser` then: feeds the manual pulse into the
+  HR-aware rules when no wearable, and **escalates the risk level** when the user's own
+  labs make a borderline food riskier (high glucose + high-GI/sugar → diabetes flag;
+  hypertension + sodium ≥400 mg). The recommendation string cites the user's actual
+  numbers (e.g. "Your last fasting sugar (140 mg/dL, prediabetic range)…"). Also added
+  this round: `assessNutritionQuality()` ("Nutritious / Low nutrition / Empty calories")
+  and history-aware budget lines (uses today's running total vs goal).
 
 ### Project layout (live code under `ARDietApp/`)
 ```
