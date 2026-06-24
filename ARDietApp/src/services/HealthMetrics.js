@@ -22,11 +22,15 @@ let cached = null;
 let cachedAt = 0;
 const CACHE_TTL_MS = 60_000;
 
-export async function getHealthMetrics() {
+// `interactive` MUST be true to ever touch Google Fit. The default (false) never
+// calls GoogleFit.authorize(), so the Google account picker NEVER pops up on
+// launch — the app just uses the demo profile (plus the user's manually-entered
+// pulse). Only an explicit "Connect Google Fit" tap should pass interactive:true.
+export async function getHealthMetrics({ interactive = false } = {}) {
   // serve cached values for 1 minute to avoid repeated fit queries per scan
   if (cached && Date.now() - cachedAt < CACHE_TTL_MS) return cached;
 
-  if (Platform.OS === 'android') {
+  if (Platform.OS === 'android' && interactive) {
     try {
       const GoogleFit = require('react-native-google-fit').default;
       const { Scopes } = require('react-native-google-fit');
@@ -75,12 +79,13 @@ export async function getHealthMetrics() {
       // Google Fit OAuth requires a Google Cloud OAuth client registered for
       // this app's signing-key SHA-1 + Fitness API enabled. Not configured for
       // this research build — demo profile is the intended fallback.
-      console.log('[HealthMetrics] Using demo profile (Google Fit not configured):', e?.message);
+      console.log('[HealthMetrics] Using demo profile (Google Fit not connected):', e?.message);
       cached = DEMO_PROFILE;
     }
   } else {
-    // iOS HealthKit bridge would go here. For now serve demo profile.
-    cached = { ...DEMO_PROFILE, source: 'demo_ios' };
+    // Non-interactive (default) OR iOS: serve the demo profile WITHOUT prompting
+    // for any Google/Apple account. This is what stops the launch-time popup.
+    cached = { ...DEMO_PROFILE, source: Platform.OS === 'ios' ? 'demo_ios' : 'demo' };
   }
 
   cachedAt = Date.now();
