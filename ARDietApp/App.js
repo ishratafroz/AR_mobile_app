@@ -9,6 +9,7 @@ import {
   Modal,
   FlatList,
   TextInput,
+  Alert,
 } from 'react-native';
 import { LogBox } from 'react-native';
 import { ViroARSceneNavigator } from '@reactvision/react-viro';
@@ -37,9 +38,13 @@ import { HealthPanel } from './src/ui/HealthPanel';
 import { HealthIntake, EMPTY_USER } from './src/ui/HealthIntake';
 import { ConfirmFood } from './src/ui/ConfirmFood';
 import { Login } from './src/ui/Login';
+import { ChatPanel } from './src/ui/ChatPanel';
+import { answer, buildFacts, SUGGESTIONS } from './src/engine/Assistant';
+import { isLlamaAvailable, chatLlama } from './src/services/LlamaChat';
 import {
-  getSession, getAccountUser, updateAccountUser, signOut, logKeyFor,
+  getSession, getAccountUser, updateAccountUser, signOut, logKeyFor, historyKeyFor, regionKeyFor,
 } from './src/services/Accounts';
+import { isRegionFood } from './src/data/Cuisines';
 
 // Foods the confirm/correct search can offer (resolve to on-device nutrition or GI).
 const SEARCH_FOODS = Array.from(new Set([...OFFLINE_FOODS, ...COMMON_FOODS])).sort();
@@ -57,8 +62,9 @@ const SEARCH_FOODS = Array.from(new Set([...OFFLINE_FOODS, ...COMMON_FOODS])).so
 // The user still gets the final say in the confirm step.
 const RAW_PRIORITY = 0.3; // raw-food signals (produce classifier / box detector)
 const BOTH_AGREE   = 0.2; // multiple models named it → extra confidence
+const REGION_MATCH = 0.15; // candidate belongs to the user's selected cuisine
 
-function mergeCandidates(boxes, cls, produce = []) {
+function mergeCandidates(boxes, cls, produce = [], regionKey = 'global') {
   const map = new Map();
   const add = (name, score, src) => {
     const key = name.toLowerCase();
@@ -76,6 +82,9 @@ function mergeCandidates(boxes, cls, produce = []) {
       // produce a bare fruit/vegetable in the first place.
       if (c.src.has('produce') || c.src.has('box')) rank += RAW_PRIORITY;
       if (c.src.size > 1) rank += BOTH_AGREE;            // corroborated by >1 model
+      // Nudge candidates that match the user's cuisine — helps disambiguate when
+      // the global model is unsure between a regional dish and a Western one.
+      if (isRegionFood(c.name, regionKey)) rank += REGION_MATCH;
       return {
         name: c.name,
         score: c.score,                                  // raw confidence shown to user
@@ -89,6 +98,19 @@ function mergeCandidates(boxes, cls, produce = []) {
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const nowTime = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+// How many days of food history to retain (bounds AsyncStorage growth).
+const HISTORY_DAYS = 60;
+
+// Keep only the most recent HISTORY_DAYS dates in the history map.
+function capHistory(map) {
+  const dates = Object.keys(map).sort();          // ascending
+  if (dates.length <= HISTORY_DAYS) return map;
+  const keep = dates.slice(dates.length - HISTORY_DAYS);
+  const out = {};
+  keep.forEach(d => { out[d] = map[d]; });
+  return out;
+}
 
 // Portion multipliers the user can pick in the nutrition card.
 const PORTION_STEPS = [0.5, 1, 1.5, 2, 3];
@@ -134,7 +156,9 @@ export default function App() {
   const [health, setHealth] = useState(null);
 
   const [user, setUser] = useState(EMPTY_USER);
-  const [log, setLog] = useState([]); // today's entries
+  const [log, setLog] = useState([]);          // today's entries
+  const [history, setHistory] = useState({});  // { 'YYYY-MM-DD': items[] } across days
+  const [region, setRegion] = useState('global'); // selected cuisine (recognition bias)
 
   const [authUser, setAuthUser] = useState(null); // signed-in username, or null
   const [booting, setBooting] = useState(true);   // restoring session on launch
@@ -144,6 +168,8 @@ export default function App() {
   const [dashOpen, setDashOpen] = useState(false);
   const [healthOpen, setHealthOpen] = useState(false);
   const [intakeOpen, setIntakeOpen] = useState(false);
+  const [ruleOpen, setRuleOpen] = useState(false);    // right panel: rule-based engine
+  const [llamaOpen, setLlamaOpen] = useState(false);  // left panel: local Llama 3
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(null); // { candidates, photoUri, boxCounts }
   const [filter, setFilter] = useState('');
@@ -155,17 +181,102 @@ export default function App() {
   async function loadUserData(username) {
     const u = await getAccountUser(username);
     setUser({ ...EMPTY_USER, ...(u || {}) });
+
+    // Load the multi-day history map first.
+    let hist = {};
+    try {
+      const rawH = await AsyncStorage.getItem(historyKeyFor(username));
+      const parsedH = rawH ? JSON.parse(rawH) : null;
+      if (parsedH && typeof parsedH === 'object') hist = parsedH;
+    } catch (_) { hist = {}; }
+
+    // Load today's working log. If the stored daily log is from a PAST day, roll
+    // it into history (so yesterday isn't lost) before resetting today's view.
     try {
       const raw = await AsyncStorage.getItem(logKeyFor(username));
       const parsed = raw ? JSON.parse(raw) : null;
-      setLog(parsed?.date === todayStr() && Array.isArray(parsed.items) ? parsed.items : []);
+      if (parsed?.date === todayStr() && Array.isArray(parsed.items)) {
+        setLog(parsed.items);
+        hist[todayStr()] = parsed.items;
+      } else {
+        if (parsed?.date && Array.isArray(parsed.items) && parsed.items.length && !hist[parsed.date]) {
+          hist[parsed.date] = parsed.items; // preserve the previous day
+        }
+        setLog([]);
+      }
     } catch (_) { setLog([]); }
+
+    hist = capHistory(hist);
+    setHistory(hist);
+    AsyncStorage.setItem(historyKeyFor(username), JSON.stringify(hist)).catch(() => {});
+
+    try {
+      const r = await AsyncStorage.getItem(regionKeyFor(username));
+      setRegion(r || 'global');
+    } catch (_) { setRegion('global'); }
   }
 
   // Wearable/health metrics — only fetched once a user is signed in, so the
   // Google Fit account prompt never appears before login.
   function refreshHealth() {
-    getHealthMetrics().then(setHealth).catch(() => {});
+    getHealthMetrics().then((h) => {
+      console.log('[HC] refreshHealth metrics:', JSON.stringify(h));
+      setHealth(h);
+    }).catch(() => {});
+  }
+
+  // Auto-sync profile vitals whenever Health Connect data arrives — from the
+  // login-time read OR the explicit Connect tap. Without this, the Health bar
+  // updated but the profile (manual-input fields) stayed on the old values.
+  useEffect(() => {
+    if (!health || health.source !== 'health_connect' || !authUser) return;
+    setUser(prev => {
+      const u = {};
+      if (health.glucose != null && prev.glucose !== health.glucose) u.glucose = health.glucose;
+      if (health.bpSystolic != null && prev.bpSystolic !== health.bpSystolic) u.bpSystolic = health.bpSystolic;
+      if (health.bpDiastolic != null && prev.bpDiastolic !== health.bpDiastolic) u.bpDiastolic = health.bpDiastolic;
+      if (health.restingHeartRate != null && prev.pulse !== health.restingHeartRate) u.pulse = health.restingHeartRate;
+      if (health.weightKg != null && prev.weightKg !== health.weightKg) u.weightKg = health.weightKg;
+      if (health.heightCm != null && prev.heightCm !== health.heightCm) u.heightCm = health.heightCm;
+      if (!Object.keys(u).length) return prev;
+      const next = { ...prev, ...u };
+      updateAccountUser(authUser, next);
+      return next;
+    });
+  }, [health, authUser]);
+
+  // Explicit "Connect Health Connect" tap → prompts permission, fetches live data,
+  // and UPDATES the profile clinical vitals (glucose / blood pressure / resting pulse)
+  // with the latest readings from Health Connect (which aggregates Google Fit data).
+  // This refreshes EXISTING values, not just blanks, so the profile reflects the wearable.
+  async function connectHealth() {
+    const h = await getHealthMetrics({ interactive: true }).catch((e) => { console.log('[HC] connect error', e?.message || e); return null; });
+    console.log('[HC] metrics from Health Connect:', JSON.stringify(h));
+    if (!h) { Alert.alert('Health Connect', 'Could not read from Health Connect. Make sure permissions were allowed.'); return; }
+    setHealth(h); // the [health] effect above syncs these vitals into the profile
+
+    // Re-assess the current food under the refreshed vitals.
+    if (lastFood && !lastFood.noNutrition) {
+      const next = { ...user, ...(h.glucose != null && { glucose: h.glucose }), ...(h.bpSystolic != null && { bpSystolic: h.bpSystolic, bpDiastolic: h.bpDiastolic }), ...(h.restingHeartRate != null && { pulse: h.restingHeartRate }) };
+      const assess = assessForUser(lastFood, h, next, { caloriesToday: totals.calories, goal });
+      setLastFood({ ...lastFood, ...assess });
+    }
+
+    // Transparent feedback: what synced into the profile, and what HC didn't have.
+    const synced = [];
+    if (h.heightCm != null) synced.push(`Height ${h.heightCm} cm`);
+    if (h.weightKg != null) synced.push(`Weight ${h.weightKg} kg`);
+    if (h.bpSystolic != null) synced.push(`BP ${h.bpSystolic}/${h.bpDiastolic ?? '—'}`);
+    if (h.glucose != null) synced.push(`Glucose ${h.glucose} mg/dL`);
+    if (h.restingHeartRate != null) synced.push(`Pulse ${h.restingHeartRate} bpm`);
+    const missing = ['heightCm', 'weightKg', 'bpSystolic', 'glucose']
+      .filter(k => h[k] == null)
+      .map(k => ({ heightCm: 'height', weightKg: 'weight', bpSystolic: 'blood pressure', glucose: 'glucose' }[k]));
+    Alert.alert(
+      'Health Connect synced',
+      (synced.length ? `Updated your profile:\n• ${synced.join('\n• ')}` : 'No profile vitals (height/weight/BP/glucose) were found in Health Connect — only activity data.') +
+      (missing.length ? `\n\nNot in Health Connect: ${missing.join(', ')}. Enter them once in the Health Connect app (or Fit) and reconnect.` : '')
+    );
   }
 
   useEffect(() => {
@@ -191,6 +302,8 @@ export default function App() {
     setAuthUser(null);
     setUser(EMPTY_USER);
     setLog([]);
+    setHistory({});
+    setRegion('global');
     setLastFood(null);
     setIntakeOpen(false);
   }
@@ -198,6 +311,12 @@ export default function App() {
   function persistLog(items) {
     if (!authUser) return;
     AsyncStorage.setItem(logKeyFor(authUser), JSON.stringify({ date: todayStr(), items })).catch(() => {});
+    // Mirror today's entries into the multi-day history (timeseries).
+    setHistory(prev => {
+      const next = capHistory({ ...prev, [todayStr()]: items });
+      AsyncStorage.setItem(historyKeyFor(authUser), JSON.stringify(next)).catch(() => {});
+      return next;
+    });
   }
   function saveUser(next) {
     setUser(next);
@@ -278,6 +397,11 @@ export default function App() {
     persistLog([]);
   }
 
+  function changeRegion(key) {
+    setRegion(key);
+    if (authUser) AsyncStorage.setItem(regionKeyFor(authUser), key).catch(() => {});
+  }
+
   async function captureScene() {
     const result = await launchCamera({
       mediaType: 'photo', includeBase64: true, saveToPhotos: false,
@@ -330,7 +454,7 @@ export default function App() {
       // Merge all models into one ranked list — none auto-wins, but raw-food
       // signals are prioritized. The user confirms (or corrects) the guess in
       // the next step, the reliable fix for on-device misclassification.
-      const candidates = mergeCandidates(boxes, cls, produce);
+      const candidates = mergeCandidates(boxes, cls, produce, region);
       // Per-food item count + how much of the frame it fills (for portion seeding).
       const boxCounts = {}, boxAreas = {};
       boxes.forEach(b => {
@@ -502,6 +626,14 @@ export default function App() {
         </View>
       )}
 
+      {/* ---- Floating chat buttons: Llama 3 (left) + rule engine (right) ---- */}
+      <TouchableOpacity style={[styles.fab, styles.fabLeft]} onPress={() => setLlamaOpen(true)} activeOpacity={0.85}>
+        <Text style={styles.fabIcon}>🗨️</Text>
+      </TouchableOpacity>
+      <TouchableOpacity style={[styles.fab, styles.fabRight]} onPress={() => setRuleOpen(true)} activeOpacity={0.85}>
+        <Text style={styles.fabIcon}>💬</Text>
+      </TouchableOpacity>
+
       {/* ---- Bottom action bar ---- */}
       <View style={styles.bottomBar}>
         <NavBtn icon="📊" label="Today" onPress={() => setDashOpen(true)} />
@@ -522,15 +654,54 @@ export default function App() {
       />
       <Dashboard
         visible={dashOpen} onClose={() => setDashOpen(false)}
-        totals={totals} goal={goal} log={log} profileLabel={prof.label} onClear={clearLog}
+        totals={totals} goal={goal} log={log} history={history}
+        profileLabel={prof.label} onClear={clearLog}
       />
-      <HealthPanel visible={healthOpen} onClose={() => setHealthOpen(false)} health={health} food={lastFood} />
-      <HealthIntake visible={intakeOpen} onClose={() => setIntakeOpen(false)} user={user} onSave={saveUser} username={authUser} onLogout={onLogout} />
+      <HealthPanel visible={healthOpen} onClose={() => setHealthOpen(false)} health={health} food={lastFood} onConnect={connectHealth} />
+      {/* LEFT: local Llama 3 (grounded on the same app data). */}
+      <ChatPanel
+        visible={llamaOpen} onClose={() => setLlamaOpen(false)}
+        side="left" title="🗨️ Llama 3" accent={C.teal}
+        greeting={"Hi! I'm Llama 3 running locally — I answer in natural language, grounded on your own logged data. Ask me anything about your diet."}
+        suggestions={SUGGESTIONS}
+        checkAvailable={isLlamaAvailable}
+        statusReady="🟢 Llama 3 · local PC"
+        statusBusy="… connecting to local LLM"
+        statusDown="⚪ Local LLM offline — start Ollama"
+        respond={async (q, priorTurns) => {
+          const ctx = { user, lastFood, totals, goal, log, history, health, profileLabel: prof.label };
+          try {
+            const text = await chatLlama([...priorTurns, { role: 'user', content: q }], buildFacts(ctx));
+            return { text, source: 'Llama 3 · local' };
+          } catch (_) {
+            return {
+              text: "I can't reach the local Llama 3 server. Make sure Ollama is running on the paired PC and the phone is connected over USB. Meanwhile, the 💬 rule-based assistant on the right works fully offline.",
+              source: 'unavailable',
+            };
+          }
+        }}
+      />
+
+      {/* RIGHT: rule-based engine — unchanged, fully offline. */}
+      <ChatPanel
+        visible={ruleOpen} onClose={() => setRuleOpen(false)}
+        side="right" title="💬 Quick Assistant" accent={C.blue}
+        greeting={"Hi! I'm your on-device assistant — instant, fully offline. Ask about your calories, macros, food log, last scan, trends, or wearable data."}
+        suggestions={SUGGESTIONS}
+        statusReady="On-device · rule engine"
+        respond={async (q) => {
+          const ctx = { user, lastFood, totals, goal, log, history, health, profileLabel: prof.label };
+          return { text: answer(q, ctx).text, source: 'rule engine' };
+        }}
+      />
+      <HealthIntake visible={intakeOpen} onClose={() => setIntakeOpen(false)} user={user} onSave={saveUser} username={authUser} onLogout={onLogout} region={region} onRegionChange={changeRegion} />
       <ConfirmFood
         visible={confirmOpen}
         candidates={pending?.candidates || []}
         photoUri={pending?.photoUri}
         searchList={SEARCH_FOODS}
+        region={region}
+        onRegionChange={changeRegion}
         onConfirm={onConfirmFood}
         onRescan={onRescan}
         onClose={() => { setConfirmOpen(false); setPending(null); }}
@@ -627,6 +798,10 @@ const styles = StyleSheet.create({
     paddingTop: 10, paddingBottom: 18, paddingHorizontal: 8,
     backgroundColor: 'rgba(14,17,22,0.92)', borderTopWidth: 1, borderTopColor: C.line,
   },
+  fab:      { position: 'absolute', bottom: 110, width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 6 },
+  fabLeft:  { left: 16, backgroundColor: C.teal },
+  fabRight: { right: 16, backgroundColor: C.blue },
+  fabIcon:  { fontSize: 24 },
   navBtn:   { alignItems: 'center', width: 60 },
   navIcon:  { fontSize: 20 },
   navLabel: { color: C.textDim, fontSize: 10, marginTop: 3, fontWeight: '600' },

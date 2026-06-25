@@ -9,6 +9,7 @@
 // module compiled in still loads the rest of the app.
 
 import { Platform } from 'react-native';
+import { getHealthConnectMetrics } from './HealthConnect';
 
 const DEMO_PROFILE = {
   source: 'demo',
@@ -27,8 +28,20 @@ const CACHE_TTL_MS = 60_000;
 // launch — the app just uses the demo profile (plus the user's manually-entered
 // pulse). Only an explicit "Connect Google Fit" tap should pass interactive:true.
 export async function getHealthMetrics({ interactive = false } = {}) {
-  // serve cached values for 1 minute to avoid repeated fit queries per scan
-  if (cached && Date.now() - cachedAt < CACHE_TTL_MS) return cached;
+  // serve cached values for 1 minute to avoid repeated queries per scan.
+  // Interactive calls (an explicit "Connect" tap) bypass the cache so they can
+  // actually prompt for permission / fetch fresh data instead of returning demo.
+  if (cached && !interactive && Date.now() - cachedAt < CACHE_TTL_MS) return cached;
+
+  // PREFERRED source: Android Health Connect (replaces deprecated Google Fit).
+  // Non-interactive reads only if permission was already granted (no launch popup);
+  // interactive will prompt the Health Connect permission screen.
+  if (Platform.OS === 'android') {
+    try {
+      const hc = await getHealthConnectMetrics({ interactive });
+      if (hc) { cached = hc; cachedAt = Date.now(); return hc; }
+    } catch (_) {}
+  }
 
   if (Platform.OS === 'android' && interactive) {
     try {

@@ -2,9 +2,13 @@
 
 buildscript {
     ext {
-        buildToolsVersion = "33.0.0"
+        buildToolsVersion = "34.0.0"
         minSdkVersion = 26
-        compileSdkVersion = 33
+        // compileSdk 34 for react-native-health-connect@3.5.3 (connect-client
+        // 1.1.0-alpha11 needs >= 34; 3.x supports Android 14+ BUILT-IN Health Connect,
+        // required for this Android 15 device). API 34 avoids API 35's sparse resource
+        // encoding that AGP 7.4.2's aapt2 can't parse. targetSdk kept at 33.
+        compileSdkVersion = 34
         targetSdkVersion = 33
 
         // We use NDK 23 which has both M1 support and is the side-by-side NDK version from AGP.

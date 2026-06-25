@@ -151,10 +151,31 @@ hospital rooms, training-room navigation) is **not** in scope.
   user-triggered text search when SCAN recognizes a dish that isn't in the offline table.
 - GI lookup: curated ~100-food table in `src/data/GlycemicIndex.js` with exact-match
   + word-overlap fuzzy match.
-- Wearable: **Google Fit** via `react-native-google-fit` (Android). HealthKit (iOS)
-  not yet wired. If Fit is unavailable, falls back to a demo profile so the risk
-  engine always has data. Fit is only queried AFTER login (avoids the Google account
-  prompt appearing before sign-in).
+- Wearable (Goal 2): **Android Health Connect** is now the PREFERRED source
+  (`services/HealthConnect.js`, lib `react-native-health-connect`), with **Google Fit**
+  (`react-native-google-fit`) and a demo profile as fallbacks — `getHealthMetrics()`
+  tries Health Connect → Google Fit → demo. Health Connect reads heart rate, resting HR,
+  steps, active/total calories, sleep, and the latest blood glucose + blood pressure
+  (which auto-fill BLANK profile vitals). Returns `{ source:'health_connect', ... }`.
+  Non-interactive calls read only if permission was already granted (no launch popup);
+  the **"Connect Health Connect"** button in `ui/HealthPanel.js` (`App.connectHealth`,
+  interactive) prompts the HC permission screen. Interactive calls bypass the 60s cache.
+  HealthKit (iOS) still not wired. **Build note / gotcha (version is load-bearing):**
+  pinned to **`react-native-health-connect@3.3.3`** — NOT older, NOT newer:
+  - 1.x (connect-client 1.0.0-alpha11) builds on compileSdk 33 but CANNOT see Android
+    14+ *built-in* Health Connect → on this Android 15 device `getSdkStatus()` throws
+    "Service not available". Dead end.
+  - 3.4.0+ (connect-client 1.1.0-alpha11) needs **compileSdk 35**, which needs AGP 8.x;
+    RN 0.72 ships AGP 7.4.2 whose aapt2 can't parse API 35's sparse resources
+    (`RES_TABLE_TYPE_TYPE entry offsets overlap`). Dead end without an AGP upgrade.
+  - **3.0.0–3.3.3 (connect-client 1.1.0-alpha06) build on compileSdk 34 AND support
+    built-in HC.** 3.3.3 is the newest of these → verified `getSdkStatus()==3` (AVAILABLE)
+    on the device.
+  So: `android/build.gradle` compileSdk **34** + build-tools **34.0.0** (both had to be
+  `sdkmanager`-installed; android-35's android.jar was also corrupt). targetSdk kept 33.
+  v3 `readRecords` returns `{records}` (`HealthConnect.js` `recsOf()` handles both shapes).
+  Added health read permissions + permissions-rationale activity-alias/intent-filter in
+  `AndroidManifest.xml`. See [[ollama-llama-setup]]/[[android-build-workaround]] for build/run.
 - **Accounts & login (local, on-device — NO server):** `services/Accounts.js` +
   `ui/Login.js`. Sign-up/login gate the whole app (`App.js` returns `<Login>` until
   `authUser` is set). Accounts live in AsyncStorage `ARDIET_ACCOUNTS_V1` (password is
@@ -193,17 +214,21 @@ ARDietApp/
 │   │   ├── NutritionAPI.js         ← offline table ~70 foods (SCAN) + USDA lookup (PICK)
 │   │   └── HealthMetrics.js        ← Google Fit + demo fallback (Goal 2)
 │   ├── engine/
-│   │   └── RiskEngine.js           ← FSA traffic-light + GI + wearable-aware escalation
+│   │   ├── RiskEngine.js           ← FSA traffic-light + GI + wearable-aware escalation
+│   │   └── Assistant.js            ← on-device, rule-based conversational answers (NO network/LLM)
 │   ├── ui/                         ← modern food-tracker UI (react-native-svg)
 │   │   ├── theme.js                ← colors, RISK colors, PROFILES (use-case modes)
 │   │   ├── Ring.js                 ← SVG calorie/macro rings + MacroBar
 │   │   ├── Sheet.js                ← shared bottom-sheet modal shell
 │   │   ├── NutritionCard.js        ← Goal 1: rings + GI + portion + summary/expanded toggle
-│   │   ├── Dashboard.js            ← Goal 1/3: daily calorie ring + macro bars + food-log timeline
+│   │   ├── Dashboard.js            ← Goal 1/3: Today tab (ring+macros+log) + Trends tab (multi-day timeseries chart)
+│   │   ├── Assistant.js            ← Goal 1/2: on-device chat sidebar (slide-in), uses engine/Assistant.js
+│   │   ├── ConfirmFood.js          ← confirm/correct scan step + CUISINE selector + region-aware quick-pick
 │   │   ├── HealthPanel.js          ← Goal 2: risk gauge + wearable cards + healthier swap
 │   │   └── ProfilePicker.js        ← Goal 3: Diabetic/Cardiac/Fitness/General modes
 │   ├── data/
 │   │   ├── GlycemicIndex.js        ← GI table + lookup + COMMON_FOODS list
+│   │   ├── Cuisines.js             ← region/cuisine food lists + recognition-bias helpers
 │   │   └── AiyFoodLabels.js        ← 2,024 labels for the AIY classifier (from model metadata)
 │   └── constants/
 │       └── APIKeys.js              ← USDA + Vision + Gemini keys (populated)
@@ -289,6 +314,46 @@ npx react-native run-android    # in another, with the Moto G 5G connected via U
 ```
 APK has been built and installed (`gradle-build5.log` → BUILD SUCCESSFUL).
 A real device is required — emulators don't expose ARCore.
+
+### Added 2026-06-24 — chat assistant, food timeseries, region-aware scan
+Three features added in response to "can it chat / track food over time / detect
+foods region-wise":
+1. **TWO chat assistants (slide-in side panels), both grounded on the same app data.**
+   Generic UI = `ui/ChatPanel.js` (docks left or right via `side` prop; `respond(q,
+   priorTurns)` decides the backend). Two FABs on the AR screen: 🦙 teal (left), 💬 blue (right).
+   - **RIGHT 💬 "Quick Assistant" — rule-based, fully offline.** `engine/Assistant.js`
+     `answer(q, ctx)` — deterministic keyword/intent matching over the app's data. NO
+     network, instant. This is the original engine, kept UNCHANGED at the user's request.
+   - **LEFT 🦙 "Llama 3" — local LLM, natural language.** `services/LlamaChat.js` talks to
+     **Ollama running Llama 3 8B on the paired PC** (NOT on the phone — the Moto G 5G has
+     only 3.5 GB RAM, can't host 8B; it runs on the PC's RTX 3050 GPU). Phone reaches it
+     via `adb reverse tcp:11434 tcp:11434` → `http://localhost:11434`. **GROUNDED**:
+     `engine/Assistant.buildFacts(ctx)` compiles the app's real numbers (log, RiskEngine,
+     offline nutrition) into the prompt; system prompt forbids inventing numbers. If the
+     server is unreachable the panel says so and points to the offline 💬 panel.
+   - **Privacy note:** meal *images* still never leave the phone. The Llama panel sends only
+     a small TEXT factsheet to the user's OWN PC (not a third-party cloud) — weaker than
+     fully on-device, but the chosen trade-off for real LLM quality on this hardware.
+   - **Prereqs for the 🦙 panel to work:** (a) Ollama running on the PC with `llama3` pulled,
+     (b) phone on USB with `adb reverse tcp:11434 tcp:11434` set. Models live on **D:**
+     (`OLLAMA_MODELS=D:\ollama\models`) because C: was full — see [[ollama-llama-setup]].
+2. **Multi-day food timeseries.** Previously the log kept only TODAY (overwritten
+   daily). Now `App.js` mirrors each day into a per-user history map
+   (`ARDIET_HISTORY_V1::<user>`, capped `HISTORY_DAYS=60`); a stale daily log is
+   rolled into history on load. `ui/Dashboard.js` gained a **Trends tab** (SVG
+   calories-per-day bar chart with goal line, 7/14/30-day range, per-day macro list).
+   Serves Goal 3 (effectiveness over time).
+3. **Region/cuisine-aware scan.** `data/Cuisines.js` defines 6 cuisines (Global,
+   South Asian, East Asian, Middle East/Med, Latin, Western), each a list of foods
+   that all resolve in the offline nutrition table. A **cuisine selector** in
+   `ui/ConfirmFood.js` (persisted per-user, `ARDIET_REGION_V1::<user>`) (a) biases
+   `App.mergeCandidates` ranking toward that cuisine (`REGION_MATCH=0.15`) and (b)
+   drives region-specific quick-pick chips so a missed regional dish is one tap to
+   log with correct macros. **Honest limitation (state this in the paper):** the SCAN
+   model is a single GLOBAL classifier (AIY Food V1, Western/popular-biased) — it
+   cannot reliably *recognize* an unpopular regional dish from pixels without
+   per-region fine-tuning. The region selector mitigates via ranking + one-tap
+   correction; true regional recognition needs a fine-tuned/larger model (future work).
 
 ### What's still mocked or open
 - iOS HealthKit bridge: file exists in planning (`files/HealthKitService.js`) but not

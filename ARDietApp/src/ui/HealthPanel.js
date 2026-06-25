@@ -1,13 +1,21 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { Sheet } from './Sheet';
 import { Ring } from './Ring';
 import { C, RISK } from './theme';
 
 // Goal 2 — wearable/mHealth + risk assessment panel.
-export function HealthPanel({ visible, onClose, health, food }) {
+export function HealthPanel({ visible, onClose, health, food, onConnect }) {
   const risk = food ? (RISK[food.riskLevel] || RISK.safe) : null;
   const score = food?.score ?? 0;
+  const [connecting, setConnecting] = useState(false);
+  const connected = health?.source === 'health_connect';
+
+  async function connect() {
+    if (!onConnect || connecting) return;
+    setConnecting(true);
+    try { await onConnect(); } finally { setConnecting(false); }
+  }
 
   return (
     <Sheet visible={visible} onClose={onClose} title="Health & Risk" subtitle="Wearable + diet risk (Goal 2)" accent={C.red}>
@@ -47,8 +55,35 @@ export function HealthPanel({ visible, onClose, health, food }) {
           <Metric icon="👟" label="Steps today" value={fmt(health?.stepsToday)} warn={health?.stepsToday != null && health.stepsToday < 3000} />
           <Metric icon="😴" label="Sleep" value={fmt(health?.sleepHours, 'h')} warn={health?.sleepHours != null && health.sleepHours < 5} />
           <Metric icon="🔥" label="Cal burned" value={fmt(health?.caloriesBurned, 'kcal')} />
+          {health?.glucose != null && (
+            <Metric icon="🩸" label="Glucose" value={fmt(health.glucose, 'mg/dL')} warn={health.glucose >= 126} />
+          )}
+          {health?.bpSystolic != null && (
+            <Metric icon="🫀" label="Blood pressure" value={`${health.bpSystolic}/${health.bpDiastolic ?? '—'}`} warn={health.bpSystolic >= 140 || health.bpDiastolic >= 90} />
+          )}
+          {health?.weightKg != null && (
+            <Metric icon="⚖️" label="Weight" value={fmt(health.weightKg, 'kg')} />
+          )}
         </View>
-        <Text style={s.source}>Source: {health?.source || 'unavailable'}</Text>
+        <Text style={s.source}>
+          Source: {sourceLabel(health?.source)}
+        </Text>
+
+        {/* Connect to Android Health Connect (real wearable data) */}
+        <TouchableOpacity
+          style={[s.connectBtn, connected && { borderColor: C.green, backgroundColor: C.green + '14' }]}
+          onPress={connect} disabled={connecting} activeOpacity={0.85}
+        >
+          {connecting
+            ? <ActivityIndicator color={C.teal} />
+            : <Text style={[s.connectText, connected && { color: C.green }]}>
+                {connected ? '✓ Health Connect linked — tap to refresh' : '＋ Connect Health Connect (real wearable data)'}
+              </Text>}
+        </TouchableOpacity>
+        <Text style={s.connectHint}>
+          Pulls heart rate, steps, calories, sleep (and latest glucose/BP) from the Health Connect
+          app on your phone. Data stays on-device.
+        </Text>
 
         <View style={s.note}>
           <Text style={s.noteText}>
@@ -74,6 +109,13 @@ function Metric({ icon, label, value, warn }) {
 
 const fmt = (v, unit = '') => (v == null ? '—' : `${v}${unit ? ' ' + unit : ''}`);
 
+function sourceLabel(src) {
+  if (src === 'health_connect') return 'Health Connect (live)';
+  if (src === 'google_fit') return 'Google Fit';
+  if (!src || String(src).startsWith('demo')) return 'demo profile (not connected)';
+  return src;
+}
+
 const s = StyleSheet.create({
   hero:     { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
   score:    { fontSize: 34, fontWeight: '900' },
@@ -92,7 +134,10 @@ const s = StyleSheet.create({
   metricIcon:{ fontSize: 20, marginBottom: 6 },
   metricValue:{ color: C.text, fontSize: 18, fontWeight: '800' },
   metricLabel:{ color: C.textDim, fontSize: 12, marginTop: 2 },
-  source:   { color: C.textFaint, fontSize: 12, marginBottom: 14 },
+  source:   { color: C.textFaint, fontSize: 12, marginBottom: 10 },
+  connectBtn:{ borderWidth: 1, borderColor: C.teal, borderRadius: 12, paddingVertical: 13, alignItems: 'center', backgroundColor: C.teal + '14' },
+  connectText:{ color: C.teal, fontSize: 14, fontWeight: '700' },
+  connectHint:{ color: C.textFaint, fontSize: 11, marginTop: 6, marginBottom: 14, lineHeight: 16 },
   note:     { backgroundColor: C.surface, borderRadius: 12, padding: 12 },
   noteText: { color: C.textDim, fontSize: 12, lineHeight: 18 },
 });

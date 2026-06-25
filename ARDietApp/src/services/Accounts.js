@@ -89,7 +89,18 @@ export async function signOut() {
   try { await AsyncStorage.removeItem(SESSION_KEY); } catch (_) {}
 }
 
-// Per-user food-log key so each account keeps its own daily log.
+// Per-user food-log key so each account keeps its own daily log (today only).
 export function logKeyFor(username) {
   return `ARDIET_LOG_V1::${normUser(username)}`;
+}
+
+// Per-user multi-day history key. Stores a { [YYYY-MM-DD]: items[] } map so the
+// app can show food-intake trends over time (timeseries), not just today.
+export function historyKeyFor(username) {
+  return `ARDIET_HISTORY_V1::${normUser(username)}`;
+}
+
+// Per-user selected cuisine/region (biases on-device recognition + quick-picks).
+export function regionKeyFor(username) {
+  return `ARDIET_REGION_V1::${normUser(username)}`;
 }

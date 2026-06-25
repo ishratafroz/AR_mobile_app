@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { Sheet } from './Sheet';
 import { C, PROFILES, SEX_OPTIONS, CONDITIONS, ALLERGENS, BLOOD_GROUPS } from './theme';
+import { REGIONS } from '../data/Cuisines';
 
 // Full health intake (recommendation engine). Captures who the user is so the
 // good/risky verdict and recommendations can be personalized. Saved on-device.
@@ -35,12 +36,14 @@ export function bmiCategory(bmi) {
 
 const num = (v) => (v === '' || v == null ? null : Number(v));
 
-export function HealthIntake({ visible, onClose, user, onSave, username, onLogout }) {
+export function HealthIntake({ visible, onClose, user, onSave, username, onLogout, region = 'global', onRegionChange }) {
   const [form, setForm] = useState(EMPTY_USER);
 
+  // Re-sync the form when the sheet opens AND whenever `user` changes (e.g. a
+  // Health Connect sync updates height/weight/BP/glucose while the profile is open).
   useEffect(() => {
     if (visible) setForm({ ...EMPTY_USER, ...(user || {}) });
-  }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [visible, user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const toggle = (k, v) => setForm(f => {
@@ -120,6 +123,16 @@ export function HealthIntake({ visible, onClose, user, onSave, username, onLogou
           {Object.values(PROFILES).map(p => (
             <Chip key={p.key} label={`${p.icon} ${p.label}`} active={form.focus === p.key}
               accent={p.accent} onPress={() => pickFocus(p.key)} />
+          ))}
+        </View>
+
+        {/* preferred cuisine — biases on-device food recognition + quick-picks */}
+        <Text style={s.section}>Preferred cuisine</Text>
+        <Text style={s.hint}>Helps the scanner recognise the foods you eat most, and tailors quick-picks.</Text>
+        <View style={s.chips}>
+          {REGIONS.map(r => (
+            <Chip key={r.key} label={`${r.icon} ${r.label}`} active={region === r.key}
+              accent={C.teal} onPress={() => onRegionChange && onRegionChange(r.key)} />
           ))}
         </View>
 
