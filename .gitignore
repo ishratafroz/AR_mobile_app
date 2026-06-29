@@ -4,3 +4,14 @@ app_screen.png
 
 # ppt scratch deps (regenerate with `npm install` in ppt/)
 ppt/node_modules/
+
+# Build artifacts — never commit APKs (GitHub rejects files >100 MB) or build output
+*.apk
+ARDietApp/android/app/build/
+ARDietApp/android/.gradle/
+
+# Build / run logs
+*.log
+
+# Backup documents
+*.BACKUP_*.pptx

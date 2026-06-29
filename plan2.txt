@@ -1,0 +1,17 @@
+1. regionwise food detect krte hbe
+2. ihealth ke integrate krbo
+3. timeseries keep track of food on specific time. 1 week of data tracking. kn food gula nicchi or nicchina ,
+4.interaction with the app,chat based system ,conversational element
+5. abstract  likhbo, focus on data jegula negative dise, store krbo, 
+6. weather and air quality integrate, location, zip code matters, kon jagay food ta pawa jabe sugest krbe, health conscious based recommendation.,temperature. zip code kn water area te pore and contamination gula kiki, health promotion, risk factor er sathe dieseade include krte hbe , like 5 years e khoti krbe, recommendation location based, religion consider krte hbe alternative hishebe religion and location.personal health information, mobile er sb sensor involve krte hbe, 
+
+7. study: manually input dite hbe allergetic foods gula niye,already ache,but alada input space dite hbe
+
+
+
+   Run Ollama on this Windows machine, phone connects over USB (adb reverse, so it's localhost — no internet, no public cloud).
+  You get full Llama 3 8B quality, fast, and the data only goes to your own PC, not Google. This is "local" in the privacy
+  sense (your trusted machine), just not "on the phone." Easy to wire — it's a fetch.         
+● End-to-end path proven: the phone reached the PC's Ollama through the USB forward and sees llama3:latest (8.0B).       
+
+ 

@@ -1,5 +1,15 @@
 const PptxGenJS = require('pptxgenjs');
+const fs = require('fs');
 const pptx = new PptxGenJS();
+
+// ---- New-update media (drop the real files here, or change these paths). The deck
+// embeds them only if they exist, so this script always runs. ----
+const ROOT = 'D:/UNT_PHD/AR_Sharma/';
+const SHOT1 = ROOT + 'new_update_1.jpg';        // cuisine-aware scan / confirm screen
+const SHOT2 = ROOT + 'new_update_2.jpg';        // nutrition card (portion, GI/GL, macros)
+const VIDEO = ROOT + 'prototype.mp4';           // video prototype walkthrough
+const POSTER = ROOT + 'prototype_poster.png';   // video poster frame (Trends)
+const has = (p) => { try { return fs.existsSync(p); } catch (_) { return false; } };
 
 pptx.author = 'AR Diet Monitoring';
 pptx.title = 'AR Diet Monitoring — On-Device AI & Clinical Risk Engine';
@@ -59,7 +69,7 @@ s.addText('On-Device Food Recognition · Clinical Risk Engine · Personal Accoun
 s.addText([
   { text: 'Cloud-based Gemini Vision replaced by a fully offline, on-device recognition + nutrition pipeline', options: { fontSize: 13, color: 'AEB9CC', fontFace: 'Segoe UI' } },
 ], { x: 0.8, y: 3.75, w: 11, h: 0.5 });
-s.addText('Updates achieved · June 18, 2026', { x: 0.8, y: 5.25, w: 11, h: 0.4, fontSize: 13, color: WHITE, bold: true, fontFace: 'Segoe UI' });
+s.addText('Updates achieved · June 25, 2026', { x: 0.8, y: 5.25, w: 11, h: 0.4, fontSize: 13, color: WHITE, bold: true, fontFace: 'Segoe UI' });
 s.addText('Platform: React Native 0.72 · @reactvision/react-viro (ARCore) · Android (Moto G 5G)', { x: 0.8, y: 5.7, w: 11.5, h: 0.4, fontSize: 11, color: GREY, fontFace: 'Segoe UI' });
 
 // =================== SLIDE 2 — OBJECTIVE / SCOPE ===================
@@ -200,7 +210,63 @@ s.addText('Why this matters: meets Goal 3 privacy requirements for human-subject
   { x: 0.6, y: 5.7, w: 12.1, h: 0.9, fontSize: 13, color: NAVY, italic: true, fontFace: 'Segoe UI' });
 footer(s, 6);
 
-// =================== SLIDE 7 — LIMITATIONS / NEXT ===================
+// =================== SLIDE 7 — NEW CAPABILITIES (THIS UPDATE) ===================
+s = pptx.addSlide(); bg(s, LIGHT); header(s, 'This update', 'New Capabilities Added');
+card(s, 0.6, 1.5, 6.0, 2.45, 'Conversational assistant (dual)', [
+  'On-device rule-based assistant — fully offline, instant answers',
+  'Local Llama 3 (8B via Ollama) — natural language, grounded on app data',
+  'Two slide-in chat panels; nutrition numbers stay correct (grounded)',
+  'Answers calories left, macros, log, last-scan verdict, trends, swaps',
+], TEAL);
+card(s, 6.75, 1.5, 6.0, 2.45, 'Android Health Connect (Goal 2)', [
+  'Replaces deprecated Google Fit — reads on-device wearable data',
+  'Heart rate, steps, sleep, calories from the Health Connect store',
+  'Pulls BP, glucose, weight, height → auto-syncs profile vitals',
+  'Feeds the clinical-aware risk engine; data stays on the phone',
+], AMBER);
+card(s, 0.6, 4.15, 6.0, 2.4, 'Multi-day food timeseries (Goal 3)', [
+  'Trends tab: calories-per-day chart + macros over 7 / 14 / 30 days',
+  'Per-user history (60-day) persisted on-device',
+  'Measures dietary effectiveness over time, not just per meal',
+], BLUE);
+card(s, 6.75, 4.15, 6.0, 2.4, 'Region / cuisine-aware recognition', [
+  'Cuisine selector after a scan re-ranks detection region-wise',
+  'South Asian · East Asian · Middle East · Latin · Western · Desserts',
+  'Region quick-picks + expanded offline foods (incl. desserts)',
+], GREEN);
+footer(s, 7);
+
+// =================== SLIDE 8 — SCREENSHOTS (NEW UPDATE) ===================
+s = pptx.addSlide(); bg(s, LIGHT); header(s, 'Prototype', 'New Update — Screenshots');
+const shotW = 3.5, shotH = 4.6, shotY = 1.6;
+[[SHOT1, 1.9, 'Region / cuisine-aware scan & confirm'], [SHOT2, 7.9, 'Nutrition card — portion, GI/GL & macros']].forEach(([file, sx, cap]) => {
+  s.addShape('roundRect', { x: sx, y: shotY, w: shotW, h: shotH, rectRadius: 0.08, fill: { color: WHITE }, line: { color: 'D6DEEA', width: 1 }, shadow: { type: 'outer', color: 'B8C0CC', blur: 7, offset: 2, angle: 90, opacity: 0.4 } });
+  if (has(file)) {
+    s.addImage({ path: file, x: sx + 0.12, y: shotY + 0.12, w: shotW - 0.24, h: shotH - 0.55, sizing: { type: 'contain', w: shotW - 0.24, h: shotH - 0.55 } });
+  } else {
+    s.addText('Drop screenshot here\n(' + file.split('/').pop() + ')', { x: sx + 0.12, y: shotY + 0.12, w: shotW - 0.24, h: shotH - 0.55, align: 'center', valign: 'middle', fontSize: 12, color: GREY, italic: true, fontFace: 'Segoe UI' });
+  }
+  s.addText(cap, { x: sx, y: shotY + shotH - 0.4, w: shotW, h: 0.35, align: 'center', fontSize: 12, bold: true, color: NAVY, fontFace: 'Segoe UI' });
+});
+footer(s, 8);
+
+// =================== SLIDE 9 — VIDEO PROTOTYPE ===================
+s = pptx.addSlide(); bg(s, LIGHT); header(s, 'Prototype', 'Video Walk-through');
+const vidW = 8.6, vidH = 4.6, vidX = (W - vidW) / 2, vidY = 1.7;
+s.addShape('roundRect', { x: vidX, y: vidY, w: vidW, h: vidH, rectRadius: 0.1, fill: { color: DARK }, line: { color: DARK } });
+if (has(VIDEO)) {
+  const vopts = { type: 'video', path: VIDEO, x: vidX + 0.15, y: vidY + 0.15, w: vidW - 0.3, h: vidH - 0.3 };
+  if (has(POSTER)) vopts.cover = 'data:image/png;base64,' + fs.readFileSync(POSTER).toString('base64');
+  s.addMedia(vopts);
+} else {
+  s.addText('▶', { x: vidX, y: vidY + 1.3, w: vidW, h: 1.2, align: 'center', fontSize: 60, color: TEAL });
+  s.addText('Embed video prototype here\n(' + VIDEO.split('/').pop() + ')', { x: vidX, y: vidY + 2.7, w: vidW, h: 0.8, align: 'center', fontSize: 14, color: 'AEB9CC', italic: true, fontFace: 'Segoe UI' });
+}
+s.addText('End-to-end demo: scan → on-device recognition → cuisine refine → nutrition + clinical risk → AR overlay → on-device assistant.',
+  { x: 0.6, y: vidY + vidH + 0.2, w: 12.1, h: 0.5, align: 'center', fontSize: 13, color: NAVY, italic: true, fontFace: 'Segoe UI' });
+footer(s, 9);
+
+// =================== SLIDE 10 — LIMITATIONS / NEXT ===================
 s = pptx.addSlide(); bg(s, LIGHT); header(s, 'Status', 'Known Limitations & Next Steps');
 card(s, 0.6, 1.55, 5.95, 4.9, 'Known limitations', [
   'iOS HealthKit bridge not wired (planning file exists, not integrated).',
@@ -210,16 +276,16 @@ card(s, 0.6, 1.55, 5.95, 4.9, 'Known limitations', [
   '"Suggest healthier alternative" exists in the risk engine but isn\'t yet shown as an AR overlay.',
 ], AMBER);
 card(s, 6.75, 1.55, 6.0, 4.9, 'Next steps', [
-  'Wire iOS HealthKit alongside Google Fit.',
+  'Wire iOS HealthKit (Android wearable now live via Health Connect).',
   'Geometry-based visual portion/size estimation.',
   'Per-item detection & multiple AR panels per plate.',
   'Surface "healthier alternative" as an AR overlay (Goal 2).',
   'Activate the optional produce classifier with a real model.',
   'User testing for recognition accuracy & AR usability (Goal 3).',
 ], BLUE);
-footer(s, 7);
+footer(s, 10);
 
-// =================== SLIDE 8 — CLOSING ===================
+// =================== SLIDE 11 — CLOSING ===================
 s = pptx.addSlide(); bg(s, NAVY);
 s.addShape('rect', { x: 0, y: 3.5, w: W, h: 0.06, fill: { color: BLUE }, line: { color: BLUE } });
 s.addText('Summary', { x: 0.8, y: 1.5, w: 11, h: 0.4, fontSize: 14, color: TEAL, bold: true, charSpacing: 3, fontFace: 'Segoe UI' });
@@ -227,9 +293,10 @@ s.addText('On-device food recognition + a clinical-aware risk engine are live, f
   { x: 0.8, y: 2.0, w: 11.6, h: 1.3, fontSize: 26, bold: true, color: WHITE, fontFace: 'Segoe UI' });
 s.addText([
   { text: 'Scan a meal  →  on-device AI identifies it and counts items  →  offline nutrition + portion  →  GI + clinical risk (using your own labs)  →  AR overlay.', options: { fontSize: 15, color: 'AEB9CC', fontFace: 'Segoe UI', paraSpaceAfter: 10 } },
-  { text: 'Delivered: on-device TFLite pipeline (AIY classifier + box detector) · accounts & expanded health intake · clinical-aware risk engine · modern SVG UI · Google Fit popup fix · nutrition table fixes.', options: { fontSize: 15, color: 'AEB9CC', fontFace: 'Segoe UI' } },
-], { x: 0.8, y: 3.8, w: 11.7, h: 2.2, valign: 'top' });
-s.addText('AR Diet Monitoring · June 18, 2026', { x: 0.8, y: 6.7, w: 11, h: 0.4, fontSize: 11, color: GREY, fontFace: 'Segoe UI' });
+  { text: 'Delivered: on-device TFLite pipeline (AIY classifier + box detector) · accounts & expanded health intake · clinical-aware risk engine · modern SVG UI.', options: { fontSize: 15, color: 'AEB9CC', fontFace: 'Segoe UI', paraSpaceAfter: 10 } },
+  { text: 'New this update: dual conversational assistant (offline rules + local Llama 3) · Android Health Connect wearable sync · multi-day food trends · region/cuisine-aware recognition with desserts.', options: { fontSize: 15, color: TEAL, fontFace: 'Segoe UI', bold: true } },
+], { x: 0.8, y: 3.8, w: 11.7, h: 2.4, valign: 'top' });
+s.addText('AR Diet Monitoring · June 25, 2026', { x: 0.8, y: 6.7, w: 11, h: 0.4, fontSize: 11, color: GREY, fontFace: 'Segoe UI' });
 
 const out = 'D:/UNT_PHD/AR_Sharma/AR_Diet_Gemini_Update.pptx';
 pptx.writeFile({ fileName: out }).then(() => console.log('WROTE ' + out));

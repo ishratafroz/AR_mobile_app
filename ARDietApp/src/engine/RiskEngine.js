@@ -4,6 +4,9 @@
 //
 // Thresholds are loosely based on UK FSA front-of-pack labelling for solid foods.
 
+import { matchReligiousRestriction } from '../data/Religion';
+import { environmentFoodNote } from '../services/Environment';
+
 const HIGH = { fat: 17.5, saturatedFat: 5, sugar: 22.5, sodium: 600 };
 const MED  = { fat: 3,    saturatedFat: 1.5, sugar: 5,  sodium: 120 };
 
@@ -226,10 +229,16 @@ function verdictFromRisk(riskLevel) {
 // Builds a personalized recommendation that also reflects the user's day so far
 // (history), how nutritious the item is (quality), and the user's vitals/labs
 // (clinical).
-function buildRecommendation(nutrition, base, user, allergens, alt, history, quality, clinical) {
+function buildRecommendation(nutrition, base, user, allergens, alt, history, quality, clinical, religion, projection, envNote) {
   if (allergens.length) {
     const list = allergens.join(' & ');
     return `Contains ${list}. You listed a ${list} allergy — do not eat this.`;
+  }
+
+  // Religion / dietary tradition is a hard cultural AVOID — lead with it.
+  if (religion) {
+    const swap = religion.alt ? ` Try ${religion.alt} instead.` : '';
+    return `${religion.reason}. Not recommended for you.${swap}`;
   }
 
   const mode = deriveMode(user);
@@ -293,17 +302,85 @@ function buildRecommendation(nutrition, base, user, allergens, alt, history, qua
 
   if (base.riskLevel !== 'safe' && alt) parts.push(`Try ${alt} instead.`);
 
+  // 5-year impact from the user's past diseases (educational).
+  if (projection && projection.factors.length) {
+    parts.push(`5-year outlook: ${projection.factors[0].impact}`);
+  }
+
+  // Environment-aware, health-conscious context (weather / air / water).
+  if (envNote) parts.push(envNote);
+
   return parts.join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// 5-YEAR IMPACT PROJECTION
+// ---------------------------------------------------------------------------
+// Educational (NOT diagnostic) projection: given the user's past/chronic diseases
+// + current conditions/labs, and how THIS food's pattern aggravates each, surface
+// the plausible 5-year trajectory if such meals are habitual. Each entry pairs a
+// risk factor with its longer-term impact, so the recommendation can say *why* a
+// food matters beyond today.
+const PURINE = ['liver', 'red meat', 'beef', 'steak', 'bacon', 'sardine', 'anchovy', 'mussel', 'shrimp', 'prawn', 'organ'];
+
+export function projectFiveYear(nutrition, user, base) {
+  if (!nutrition || !user) return { factors: [], summary: null };
+  const past = new Set([...(user.pastDiseases || []), ...(user.conditions || [])]);
+  const clinical = assessClinical(user);
+  const name = `${nutrition.name || ''} ${nutrition.queryName || ''}`.toLowerCase();
+  const hi = (k, v) => (nutrition[k] != null && nutrition[k] >= v);
+  const factors = [];
+  const add = (factor, impact) => factors.push({ factor, impact });
+
+  const cardiac = past.has('heart') || past.has('heart_attack') || past.has('stroke') || past.has('cholesterol');
+  if (cardiac && (hi('saturatedFat', 5) || hi('sodium', 500))) {
+    add('Prior cardiovascular disease + high saturated fat/sodium',
+        'Habitual high-fat, high-salt meals raise the 5-year risk of a recurrent heart attack or stroke.');
+  }
+  if ((past.has('hypertension') || past.has('stroke')) && hi('sodium', 400)) {
+    add('Hypertension/stroke history + high sodium',
+        'Sustained high sodium can worsen blood pressure control and 5-year stroke risk.');
+  }
+  if ((past.has('diabetes') || clinical.diabetesRisk) && (base?.diabetesFlag || hi('sugar', 10) || (nutrition.gi != null && nutrition.gi >= 56))) {
+    add('Diabetes / high blood sugar + high glycemic load',
+        'Frequent high-GI, sugary foods accelerate 5-year risk of diabetic complications (nerve, eye, kidney damage).');
+  }
+  if (past.has('kidney') && (hi('sodium', 400) || hi('protein', 20))) {
+    add('Kidney disease + high sodium/protein',
+        'High salt/protein load can speed kidney function decline over 5 years.');
+  }
+  if (past.has('fatty_liver') && (hi('sugar', 15) || hi('saturatedFat', 5))) {
+    add('Fatty liver + high sugar/saturated fat',
+        'Continued sugar and saturated fat can progress fatty liver toward fibrosis within years.');
+  }
+  if ((past.has('obesity') || (bmiOf(user) != null && bmiOf(user) >= 30)) && hi('calories', 250)) {
+    add('Obesity + calorie-dense food',
+        'Regular calorie-dense meals project continued weight gain and metabolic risk over 5 years.');
+  }
+  if (past.has('gout') && PURINE.some(p => name.includes(p))) {
+    add('Gout + high-purine food',
+        'Purine-rich foods can trigger more frequent gout flares and joint damage over time.');
+  }
+
+  let summary = null;
+  if (factors.length) {
+    summary = `If foods like this are eaten regularly, your history suggests ${factors.length} longer-term concern${factors.length > 1 ? 's' : ''} over the next ~5 years.`;
+  } else if (past.size) {
+    summary = 'This food does not strongly aggravate your recorded medical history in the longer term — still keep portions sensible.';
+  }
+  return { factors, summary };
 }
 
 /**
  * Full personalized assessment. Combines nutrient risk (tuned to the user's
- * focus), wearable signals, the user's medical conditions, and allergies into a
- * single good / moderate / risky / avoid verdict plus a recommendation string.
+ * focus), wearable signals, the user's medical conditions, allergies, religion,
+ * past-disease 5-year projection, and local environment into a single
+ * good / moderate / risky / avoid verdict plus a recommendation string.
  */
 // `history` (optional): { caloriesToday, goal } — the user's running daily total
 // before this item, so the recommendation can speak to their day, not just the food.
-export function assessForUser(nutrition, healthMetrics, user, history = null) {
+// `env` (optional): environment snapshot from services/Environment.getEnvironment.
+export function assessForUser(nutrition, healthMetrics, user, history = null, env = null) {
   const mode = deriveMode(user);
   const clinical = assessClinical(user);
 
@@ -328,11 +405,19 @@ export function assessForUser(nutrition, healthMetrics, user, history = null) {
   }
 
   const allergens = matchAllergens(nutrition, user?.allergies);
-  const alt = suggestAlternative(nutrition?.queryName || nutrition?.name, base.riskLevel);
+  const religion = matchReligiousRestriction(nutrition, user?.religion);
+  const projection = projectFiveYear(nutrition, user, base);
+  // Prefer a religion-permissible alternative, else the standard swap table.
+  const alt = (religion && religion.alt) || suggestAlternative(nutrition?.queryName || nutrition?.name, base.riskLevel);
   const quality = assessNutritionQuality(nutrition);
+  const envNote = environmentFoodNote(env, nutrition);
 
-  const v = allergens.length ? VERDICT.avoid : verdictFromRisk(base.riskLevel);
-  const recommendation = buildRecommendation(nutrition, base, user, allergens, alt, history, quality, clinical);
+  // A religion restriction is a hard AVOID (like an allergen) — culturally the
+  // food should not be recommended at all.
+  const v = (allergens.length || religion) ? VERDICT.avoid : verdictFromRisk(base.riskLevel);
+  const recommendation = buildRecommendation(
+    nutrition, base, user, allergens, alt, history, quality, clinical, religion, projection, envNote
+  );
 
   return {
     ...base,
@@ -340,6 +425,9 @@ export function assessForUser(nutrition, healthMetrics, user, history = null) {
     mode,
     clinical,
     allergens,
+    religion,            // { matched, reason, alt, religion } or null
+    projection,          // { factors:[{factor,impact}], summary }
+    envNote,             // environment-aware health note (string) or null
     alternative: alt,
     verdict: v.key,
     verdictLabel: v.label,

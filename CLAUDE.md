@@ -355,9 +355,109 @@ foods region-wise":
    per-region fine-tuning. The region selector mitigates via ranking + one-tap
    correction; true regional recognition needs a fine-tuned/larger model (future work).
 
+### Added 2026-06-27 — environment/location context, religion + past-disease awareness, multi-food plate
+Six features added in response to a request for weather/air-quality, location/ZIP,
+religion-aware recommendations, past-disease 5-year impact, nearby food, and
+per-item plate calories:
+1. **Environment & location layer.** `services/Environment.js` resolves the user's
+   **ZIP** (Zippopotam.us, free no-key) → lat/lon → **weather + temperature**
+   (Open-Meteo forecast) + **air quality** (Open-Meteo air-quality: US AQI, PM2.5,
+   PM10, ozone) + a **tap-water advisory** (heuristic + EWG Tap Water deep link by
+   ZIP). 15-min cache. `ui/EnvironmentPanel.js` shows it all and has a **"Find this
+   food near you"** button that opens Google Maps search (no Places key). A tappable
+   **weather chip** in the top bar (temp + AQI) opens the panel. GPS is intentionally
+   NOT used (needs a native module + rebuild); ZIP is sufficient and the user stressed
+   "zip code matters". Only the ZIP/coords leave the phone (to free public weather APIs).
+2. **Religion / dietary-tradition filter.** `data/Religion.js` maps religion →
+   restricted-food keywords + reason + permissible alternative (Hindu→beef,
+   Muslim→pork/alcohol, Jewish→pork/shellfish, Jain→meat/egg/root-veg, Buddhist→meat,
+   vegetarian/vegan). `RiskEngine.matchReligiousRestriction` flags a matched food as a
+   hard **AVOID** verdict (same mechanism as allergens) with the alternative surfaced.
+3. **Past / chronic diseases (manual) + 5-year impact projection.** New `pastDiseases`
+   multi-select in the profile (`theme.PAST_DISEASES`). `RiskEngine.projectFiveYear`
+   pairs each recorded disease with how THIS food's pattern aggravates it (educational,
+   not diagnostic) — e.g. prior cardiac event + high satfat/sodium → recurrent-event
+   risk; diabetes + high GI → complications; kidney + sodium/protein; fatty liver +
+   sugar; gout + purines; obesity + calorie-dense. Shown in the recommendation + a
+   dedicated **5-YEAR IMPACT** card in HealthPanel.
+4. **Environment-aware health note.** `RiskEngine.assessForUser` now takes `env` and
+   adds `environmentFoodNote` (hot day → hydrate/lighter + salty-item thirst warning;
+   poor AQI → antioxidant foods + limit exertion; water advisory). Surfaced in the
+   recommendation and a **LOCAL ENVIRONMENT** card in HealthPanel.
+5. **Profile additions.** `EMPTY_USER` gained `religion`, `zip`, `pastDiseases`;
+   `ui/HealthIntake.js` got the corresponding sections. Persisted per-account as usual.
+6. **Multi-food plate detection (the "wrong info on a mixed plate" fix).** When the box
+   detector localizes **2+ distinct foods**, `App.onScan` now routes to the new
+   `ui/ConfirmPlate.js` instead of collapsing to one wrong guess. ConfirmPlate lists
+   each item with **its own calories**, per-item count steppers, on/off toggles, and an
+   "add missed item" search; `App.onConfirmPlate` logs **each item as its own entry**
+   (own calories + own personalized risk), sets the highest-calorie item as the AR
+   "hero", and alerts a per-item breakdown + plate total. **Honest limitation:** the box
+   detector only knows 15 classes (bread/pizza/burger/fries/hot dog/sandwich + the 4
+   fruits…), so true per-item separation only works for those; non-detector dishes still
+   fall to the single-item confirm. Full multi-region per-item recognition needs a
+   detector with a larger food vocabulary (future work).
+   - `assessForUser(nutrition, healthMetrics, user, history, env)` — note the new 5th
+     `env` arg; all four call sites in `App.js` pass it.
+
+### Added 2026-06-27 (later) — plate builder + OPTIONAL local-AI multi-item detection
+Follow-up to "detect every item on a mixed plate (tomato/avocado/spinach…)". The
+on-device TFLite models CANNOT do this (15-class box detector + whole-dish classifier),
+so two layers were added:
+1. **Plate builder (on-device, private).** Composite dishes (`COMPOSITE_RE` in App.js:
+   salad/bowl/platter/mixed veg/wrap/thali) now route to `ui/ConfirmPlate.js` instead of
+   logging one wrong item. A **produce quick-pick palette** (`PRODUCE_PALETTE`) lets the
+   user tap each component (tomato, avocado, spinach, mushroom, sweet potato, cauliflower,
+   …) → each logs with its OWN calories. Added ~18 salad vegetables/produce to the
+   `NutritionAPI` offline table (they were missing → 0 kcal). A manual "🍱 Several foods?"
+   button on the single-item confirm opens the same builder.
+2. **OPTIONAL local-AI auto-detect (`services/VisionDetect.js`).** Real multi-item
+   recognition via a **vision** model in the user's Ollama on the paired PC (reuses the
+   `adb reverse tcp:11434` bridge). `detectFoodsVision(base64)` posts the photo to
+   `/api/generate` with `images:[…]`, parses a JSON food list, resolves each to the
+   offline table, and pre-fills the plate builder. Surfaced as a purple "✨ Smart-detect
+   every item (local AI)" button in ConfirmFood + ConfirmPlate (`App.aiDetectPlate`, photo
+   base64 kept in `shotB64Ref`). **Privacy trade-off (state in paper):** unlike the default
+   on-device SCAN, this sends the meal IMAGE to the user's OWN PC (localhost over USB, not
+   cloud) — opt-in. **Prereq: a VISION model must be pulled** — `llama3` (text) CANNOT see
+   images. `getVisionModel()` auto-picks from llava/moondream/bakllava/llama3.2-vision/etc.
+   Recommend `ollama pull moondream` (1.8B, fits the RTX 3050's ~4 GB VRAM) or `ollama pull
+   llava`. Note: as of this build the user's `ollama list` showed EMPTY — no model pulled yet.
+   - **Detection-quality fixes (2026-06-28):** moondream falsely reported "avocado" on a
+     breakfast plate. TWO causes: (a) the prompt's format example LISTED real foods
+     (`["avocado",…]`) → small VLMs copy example words → fixed to placeholder-only
+     (`["<food1>",…]`) + explicit anti-hallucination rules; (b) moondream (1.8B) is weak.
+     Pulled **`qwen2.5vl:3b`** (~3.2 GB, fits the RTX 3050 **6 GB**; research: Qwen2.5-VL 7B
+     beats Llama-3.2-Vision 11B). `VISION_HINTS` reordered STRONGEST-FIRST so the app
+     auto-prefers qwen, moondream last. Verified: qwen returns `[]` on a non-food image (no
+     hallucination). Cold load+inference ≈60s on the 3050 → `TIMEOUT_MS` raised to 120s;
+     warm the model + `keep_alive:'30m'` to avoid cold-start timeouts. GPU = RTX 3050 6 GB
+     Laptop (≈4.7 GB free); 11B vision models don't fit. Ollama server stores models on
+     **C:** (15 GB free) despite `OLLAMA_MODELS=D:\ollama\models` user-env (server didn't
+     inherit it) — a concurrent Gradle build once exhausted C: mid-pull.
+   - **True on-device segmentation was rejected as infeasible:** no good broad-vocabulary
+     food-segmentation `.tflite` to ship, and seg models (Mask R-CNN/DeepLab class) are too
+     heavy for the 3.5 GB Moto G 5G. The vision-LLM-on-PC path is the realistic alternative.
+
 ### What's still mocked or open
 - iOS HealthKit bridge: file exists in planning (`files/HealthKitService.js`) but not
   wired into `services/HealthMetrics.js`.
+- Water contamination is an **indicative heuristic + EWG deep link**, not a live
+  measured feed (no free no-key nationwide API). Nearby-food availability is a Maps
+  search deep link, not a Places-API result list.
+- Local-AI plate detection needs a **vision** model pulled in Ollama; degrades with a
+  clear message when none is present. On-device SCAN remains the private default.
+
+### Gotcha — release builds blocked HTTP to localhost (fixed 2026-06-27)
+Symptom: "Local AI unavailable — could not reach local vision model" (and the same would
+hit the **Llama 3 chat**) in a **release** APK, even with Ollama running + `adb reverse
+tcp:11434` set. Cause: `android:usesCleartextTraffic="true"` lives ONLY in
+`src/debug/AndroidManifest.xml`, so release builds blocked cleartext HTTP to
+`http://localhost:11434`. Fix: added `src/main/res/xml/network_security_config.xml`
+permitting cleartext to **localhost / 127.0.0.1 / 10.0.2.2 only** (HTTPS still enforced for
+weather/air/water APIs) and referenced it via `android:networkSecurityConfig` on the
+`<application>` in the **main** manifest. Anything reaching the PC's Ollama or Metro from a
+**release** build depends on this.
 - Portion estimation: SCAN uses the offline table's typical `serving` grams, scaled by
   the box detector's item count ("3 × apple"). No visual size estimation yet. The PICK
   path still uses USDA per-100g only (no portion). `files/PortionEstimator.js`

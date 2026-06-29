@@ -20,25 +20,34 @@ export const REGIONS = [
   {
     key: 'south_asian', label: 'South Asian', icon: '🇮🇳',
     foods: ['biryani', 'naan', 'roti', 'chapati', 'paratha', 'samosa', 'dal', 'curry',
-            'paneer', 'lentils', 'chickpeas', 'rice', 'mango', 'yogurt'],
+            'paneer', 'lentils', 'chickpeas', 'rice', 'mango', 'yogurt',
+            'gulab jamun', 'kheer', 'jalebi'],
   },
   {
     key: 'east_asian', label: 'East Asian', icon: '🥢',
     foods: ['noodles', 'ramen', 'sushi', 'fried rice', 'tofu', 'edamame', 'tempeh',
-            'rice', 'soup', 'instant noodles'],
+            'rice', 'soup', 'instant noodles', 'mochi'],
   },
   {
     key: 'middle_eastern', label: 'Middle East / Med', icon: '🥙',
-    foods: ['hummus', 'chickpeas', 'lentils', 'bread', 'salad', 'rice', 'grilled chicken', 'fish'],
+    foods: ['hummus', 'chickpeas', 'lentils', 'bread', 'salad', 'rice', 'grilled chicken',
+            'fish', 'baklava', 'pudding'],
   },
   {
     key: 'latin', label: 'Latin American', icon: '🌮',
-    foods: ['taco', 'burrito', 'beans', 'rice', 'grilled chicken', 'fish', 'salad'],
+    foods: ['taco', 'burrito', 'beans', 'rice', 'grilled chicken', 'fish', 'salad', 'churros'],
   },
   {
     key: 'western', label: 'Western', icon: '🍔',
     foods: ['pizza', 'burger', 'sandwich', 'french fries', 'hot dog', 'pasta', 'spaghetti',
-            'salad', 'grilled chicken', 'fried chicken', 'bread'],
+            'salad', 'grilled chicken', 'fried chicken', 'bread',
+            'tiramisu', 'cheesecake', 'brownie', 'pie'],
+  },
+  {
+    key: 'desserts', label: 'Desserts', icon: '🍰',
+    foods: ['cake', 'ice cream', 'tiramisu', 'cheesecake', 'brownie', 'pie', 'pudding',
+            'custard', 'donut', 'cookie', 'chocolate', 'muffin', 'waffle',
+            'baklava', 'gulab jamun', 'kheer', 'jalebi', 'churros', 'mochi'],
   },
 ];
 

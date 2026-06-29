@@ -18,7 +18,7 @@ export function HealthPanel({ visible, onClose, health, food, onConnect }) {
   }
 
   return (
-    <Sheet visible={visible} onClose={onClose} title="Health & Risk" subtitle="Wearable + diet risk (Goal 2)" accent={C.red}>
+    <Sheet visible={visible} onClose={onClose} title="Health & Risk" accent={C.red}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 16 }}>
         {/* risk gauge for the last scanned food */}
         {food ? (
@@ -39,6 +39,32 @@ export function HealthPanel({ visible, onClose, health, food, onConnect }) {
           </View>
         ) : (
           <Text style={s.empty}>Scan a food to see its risk assessment.</Text>
+        )}
+
+        {/* Religion / dietary-tradition restriction (hard AVOID) */}
+        {food?.religion && (
+          <View style={[s.flag, { borderColor: C.purple, backgroundColor: C.purple + '14' }]}>
+            <Text style={[s.flagLabel, { color: C.purple }]}>⚠ NOT PERMITTED FOR YOU</Text>
+            <Text style={s.flagText}>{food.religion.reason}.</Text>
+          </View>
+        )}
+
+        {/* 5-year impact projection from the user's past diseases */}
+        {food?.projection?.factors?.length > 0 && (
+          <View style={[s.flag, { borderColor: C.amber, backgroundColor: C.amber + '14' }]}>
+            <Text style={[s.flagLabel, { color: C.amber }]}>🕒 5-YEAR IMPACT (based on your history)</Text>
+            {food.projection.factors.map((f, i) => (
+              <Text key={i} style={s.flagText}>• {f.impact}</Text>
+            ))}
+          </View>
+        )}
+
+        {/* Environment-aware, health-conscious note */}
+        {food?.envNote && (
+          <View style={[s.flag, { borderColor: C.teal, backgroundColor: C.teal + '14' }]}>
+            <Text style={[s.flagLabel, { color: C.teal }]}>🌦 LOCAL ENVIRONMENT</Text>
+            <Text style={s.flagText}>{food.envNote}</Text>
+          </View>
         )}
 
         {food?.alternative && (
@@ -125,6 +151,9 @@ const s = StyleSheet.create({
   foodName: { color: C.text, fontSize: 16, fontWeight: '700', marginBottom: 6, textTransform: 'capitalize' },
   reason:   { color: C.textDim, fontSize: 13, marginTop: 1 },
   empty:    { color: C.textFaint, fontSize: 13, fontStyle: 'italic', paddingVertical: 12 },
+  flag:     { borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 12 },
+  flagLabel:{ fontSize: 11, fontWeight: '800', letterSpacing: 0.5, marginBottom: 4 },
+  flagText: { color: C.textDim, fontSize: 13, lineHeight: 18, marginTop: 1 },
   swap:     { borderWidth: 1, borderRadius: 12, padding: 12, marginBottom: 16, backgroundColor: C.green + '14' },
   swapLabel:{ color: C.textDim, fontSize: 11, fontWeight: '700' },
   swapVal:  { color: C.green, fontSize: 16, fontWeight: '700', marginTop: 2, textTransform: 'capitalize' },

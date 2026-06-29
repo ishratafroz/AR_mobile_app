@@ -37,6 +37,10 @@ import { Dashboard } from './src/ui/Dashboard';
 import { HealthPanel } from './src/ui/HealthPanel';
 import { HealthIntake, EMPTY_USER } from './src/ui/HealthIntake';
 import { ConfirmFood } from './src/ui/ConfirmFood';
+import { ConfirmPlate } from './src/ui/ConfirmPlate';
+import { EnvironmentPanel } from './src/ui/EnvironmentPanel';
+import { getEnvironment, detectDeviceLocation } from './src/services/Environment';
+import { detectFoodsVision } from './src/services/VisionDetect';
 import { Login } from './src/ui/Login';
 import { ChatPanel } from './src/ui/ChatPanel';
 import { answer, buildFacts, SUGGESTIONS } from './src/engine/Assistant';
@@ -44,10 +48,25 @@ import { isLlamaAvailable, chatLlama } from './src/services/LlamaChat';
 import {
   getSession, getAccountUser, updateAccountUser, signOut, logKeyFor, historyKeyFor, regionKeyFor,
 } from './src/services/Accounts';
-import { isRegionFood } from './src/data/Cuisines';
+import { isRegionFood, regionFoods } from './src/data/Cuisines';
 
 // Foods the confirm/correct search can offer (resolve to on-device nutrition or GI).
 const SEARCH_FOODS = Array.from(new Set([...OFFLINE_FOODS, ...COMMON_FOODS])).sort();
+
+// Quick-tap palette for the plate builder — the common components of a mixed
+// plate / salad that the on-device models can't separate (tomato/avocado/spinach…).
+// Each resolves to real nutrition in the offline table, so every tap logs a food
+// with its own calories.
+const PRODUCE_PALETTE = [
+  'tomato', 'avocado', 'spinach', 'lettuce', 'cucumber', 'bell pepper', 'onion',
+  'mushroom', 'corn', 'olives', 'carrot', 'broccoli', 'cauliflower', 'beans',
+  'chickpeas', 'egg', 'cheese', 'grilled chicken', 'apple', 'banana',
+];
+
+// Composite/mixed dishes the classifier names as ONE thing but which are really
+// several foods on a plate — route these to the plate builder so the user logs
+// each component with its own calories instead of a single wrong total.
+const COMPOSITE_RE = /salad|bowl|platter|mixed veg|vegetable|veggie|wrap|combo|thali/i;
 
 // Merge box-detector + classifier guesses into one ranked candidate list.
 //
@@ -94,6 +113,25 @@ function mergeCandidates(boxes, cls, produce = [], regionKey = 'global') {
     })
     .sort((a, b) => b.rank - a.rank)
     .slice(0, 6);
+}
+
+// Strong cuisine preference, applied when the user EXPLICITLY taps a cuisine in the
+// confirm step ("this IS South Asian food"). Unlike the gentle scan-time bias, this
+// reorders decisively: detected in-cuisine guesses first, then that cuisine's common
+// dishes injected as options, then the out-of-cuisine model guesses (e.g. a wrong
+// "pizza") demoted to the bottom. So picking South Asian replaces a pizza guess with
+// biryani / curry / naan / etc. The model can't re-detect on-device, so the honest
+// answer is to surface the right cuisine's foods for a one-tap pick.
+function preferCuisine(candidates, key) {
+  if (!key || key === 'global') return candidates;
+  const inC = candidates.filter(c => isRegionFood(c.name, key));
+  const outC = candidates.filter(c => !isRegionFood(c.name, key));
+  const present = new Set(candidates.map(c => c.name.toLowerCase()));
+  const injected = regionFoods(key)
+    .filter(f => !present.has(f.toLowerCase()))
+    .slice(0, 6)
+    .map(f => ({ name: f, score: 0, rank: 0.25, hasNutrition: !!getNutritionOffline(f), suggested: true }));
+  return [...inC, ...injected, ...outC].slice(0, 10);
 }
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
@@ -148,6 +186,8 @@ function computeConsumed(food) {
 export default function App() {
   const navRef = useRef(null);
   const arViewRef = useRef(null);
+  const shotB64Ref = useRef(null); // last captured photo (base64) for local-AI detect
+  const [aiBusy, setAiBusy] = useState(false);
 
   const [scanning, setScanning] = useState(false);
   const [lastFood, setLastFood] = useState(null);
@@ -159,6 +199,7 @@ export default function App() {
   const [log, setLog] = useState([]);          // today's entries
   const [history, setHistory] = useState({});  // { 'YYYY-MM-DD': items[] } across days
   const [region, setRegion] = useState('global'); // selected cuisine (recognition bias)
+  const [env, setEnv] = useState(null);        // local weather/air/water snapshot (by ZIP)
 
   const [authUser, setAuthUser] = useState(null); // signed-in username, or null
   const [booting, setBooting] = useState(true);   // restoring session on launch
@@ -172,6 +213,12 @@ export default function App() {
   const [llamaOpen, setLlamaOpen] = useState(false);  // left panel: local Llama 3
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(null); // { candidates, photoUri, boxCounts }
+  const [envOpen, setEnvOpen] = useState(false);     // environment & location panel
+  const [plateOpen, setPlateOpen] = useState(false); // multi-food plate confirm
+  const [plateItems, setPlateItems] = useState([]);  // [{ name, count }] detected on plate
+  const [platePhoto, setPlatePhoto] = useState(null);
+  const [plateNote, setPlateNote] = useState(null);  // hint shown atop the plate builder
+  const [plateAuto, setPlateAuto] = useState(false); // auto-run local-AI detect on open
   const [filter, setFilter] = useState('');
 
   const profile = user?.focus || 'general';
@@ -258,7 +305,7 @@ export default function App() {
     // Re-assess the current food under the refreshed vitals.
     if (lastFood && !lastFood.noNutrition) {
       const next = { ...user, ...(h.glucose != null && { glucose: h.glucose }), ...(h.bpSystolic != null && { bpSystolic: h.bpSystolic, bpDiastolic: h.bpDiastolic }), ...(h.restingHeartRate != null && { pulse: h.restingHeartRate }) };
-      const assess = assessForUser(lastFood, h, next, { caloriesToday: totals.calories, goal });
+      const assess = assessForUser(lastFood, h, next, { caloriesToday: totals.calories, goal }, env);
       setLastFood({ ...lastFood, ...assess });
     }
 
@@ -288,6 +335,34 @@ export default function App() {
       setBooting(false);
     })();
   }, []);
+
+  // Resolve local weather / air quality / water advisory whenever the ZIP changes.
+  useEffect(() => {
+    const z = user?.zip;
+    if (!z || String(z).length < 5) { setEnv(null); return; }
+    getEnvironment(z).then(setEnv).catch(() => {});
+  }, [user?.zip]);
+
+  // One-time auto-detect of the device location (IP-based) when signed in with no
+  // ZIP yet — so location/weather is tracked & saved without opening the panel.
+  const autoLocTried = useRef(false);
+  useEffect(() => {
+    if (!authUser || autoLocTried.current) return;
+    if (user?.zip && String(user.zip).length >= 5) { autoLocTried.current = true; return; }
+    autoLocTried.current = true;
+    detectDeviceLocation().then((loc) => {
+      if (loc?.zip) saveZip(loc.zip);
+    }).catch(() => {});
+  }, [authUser, user?.zip]);
+
+  // Save a ZIP edited from the Environment panel (also persists to the account).
+  function saveZip(z) {
+    setUser(prev => {
+      const next = { ...prev, zip: z };
+      if (authUser) updateAccountUser(authUser, next);
+      return next;
+    });
+  }
 
   // Called by the Login screen on successful sign-in / sign-up.
   async function onAuthed(username, _user, isSignup) {
@@ -323,7 +398,7 @@ export default function App() {
     if (authUser) updateAccountUser(authUser, next);
     if (lastFood && !lastFood.noNutrition) {
       // re-assess the currently shown food under the updated profile
-      const assess = assessForUser(lastFood, health, next, { caloriesToday: totals.calories, goal });
+      const assess = assessForUser(lastFood, health, next, { caloriesToday: totals.calories, goal }, env);
       setLastFood({ ...lastFood, ...assess });
     }
   }
@@ -343,7 +418,7 @@ export default function App() {
     const h = health || (await getHealthMetrics().catch(() => null));
     if (h && !health) setHealth(h);
     // History so far today → lets the verdict speak to the user's running total.
-    const assess = assessForUser(nutrition, h, user, { caloriesToday: totals.calories, goal });
+    const assess = assessForUser(nutrition, h, user, { caloriesToday: totals.calories, goal }, env);
     const id = `${Date.now()}`;
     const food = { ...nutrition, ...assess, health: h, logId: id };
     setLastFood(food);
@@ -377,7 +452,7 @@ export default function App() {
     // Budget excludes this item's current calories so the projection is correct.
     const others = log.filter(e => e.id !== lastFood.logId);
     const caloriesToday = others.reduce((a, e) => a + e.consumed.calories, 0);
-    const assess = assessForUser(resized, health, user, { caloriesToday, goal });
+    const assess = assessForUser(resized, health, user, { caloriesToday, goal }, env);
     const next = { ...resized, ...assess };
     setLastFood(next);
 
@@ -400,6 +475,18 @@ export default function App() {
   function changeRegion(key) {
     setRegion(key);
     if (authUser) AsyncStorage.setItem(regionKeyFor(authUser), key).catch(() => {});
+  }
+
+  // Cuisine picked in the confirm step → persist it AND re-rank the current scan's
+  // candidates toward that cuisine, so the "Best guesses" refine region-wise live.
+  function changeScanRegion(key) {
+    changeRegion(key);
+    setPending(p => {
+      if (!p) return p;
+      const ranked = mergeCandidates(p.boxes || [], p.cls || [], p.produce || [], key);
+      const candidates = preferCuisine(ranked, key); // decisively reorder to the cuisine
+      return { ...p, candidates };
+    });
   }
 
   async function captureScene() {
@@ -430,6 +517,7 @@ export default function App() {
       }
       if (shot?.cancelled) return;
       if (!shot?.base64) { setError('Camera capture failed — try PICK'); setPickerOpen(true); return; }
+      shotB64Ref.current = shot.base64; // kept for optional local-AI plate detect
 
       // Three on-device models, image never leaves the phone:
       //  - box DETECTOR: where is the food + how many items (counting, portions)
@@ -468,8 +556,34 @@ export default function App() {
         return;
       }
 
-      // Open the confirm/correct step. Nothing is logged until the user confirms.
-      setPending({ candidates, photoUri: shot.uri, boxCounts, boxAreas });
+      // MULTI-FOOD PLATE: if the box detector localized 2+ DISTINCT foods, don't
+      // collapse them into one (the old bug — a mixed plate showed a single wrong
+      // dish). Show each item separately with its own calories via ConfirmPlate.
+      const distinct = Object.keys(boxCounts);
+      if (distinct.length >= 2) {
+        const items = distinct.map(k => {
+          const name = boxes.find(b => b.name.toLowerCase() === k)?.name || k;
+          return { name, count: boxCounts[k] };
+        });
+        // Auto-run local-AI detection to enrich/replace the 15-class box items
+        // (falls back to these box items if AI is unavailable).
+        openPlateBuilder(items, shot.uri, 'Detecting every item with local AI…', true);
+        return;
+      }
+
+      // COMPOSITE DISH: the classifier named the whole plate as one thing (e.g.
+      // "salad"/"bowl"), but the on-device models can't separate the items. Open
+      // the plate builder and AUTO-run local-AI detection so each food appears
+      // without hunting for a button (falls back to manual tap if AI is off).
+      const top = candidates[0];
+      if (top && COMPOSITE_RE.test(top.name)) {
+        openPlateBuilder([], shot.uri, 'Detecting every item with local AI…', true);
+        return;
+      }
+
+      // Open the single-item confirm/correct step. Nothing is logged until the
+      // user confirms. Keep the raw model outputs so changing cuisine re-ranks live.
+      setPending({ candidates, photoUri: shot.uri, boxCounts, boxAreas, boxes, cls, produce });
       setConfirmOpen(true);
     } catch (e) {
       setError(String(e.message || e));
@@ -536,8 +650,141 @@ export default function App() {
 
   function onRescan() {
     setConfirmOpen(false);
+    setPlateOpen(false);
     setPending(null);
     setTimeout(onScan, 250);
+  }
+
+  // Open the multi-item plate builder (used by: 2+ detected boxes, a composite
+  // dish like "salad", or the manual "it's several items" button).
+  function openPlateBuilder(items, photoUri, note, auto = false) {
+    setConfirmOpen(false);
+    setPending(null);
+    setPlateItems(items || []);
+    setPlatePhoto(photoUri || null);
+    setPlateNote(note || null);
+    setPlateAuto(auto);
+    setPlateOpen(true);
+  }
+
+  // From the single-item confirm step: "this is actually several foods".
+  function onSplitToPlate() {
+    openPlateBuilder([], pending?.photoUri || null,
+      'Tap each food on your plate below — each one is logged separately with its own calories.');
+  }
+
+  // OPTIONAL local-AI detection: send the captured photo to the vision model in
+  // Ollama on the paired PC (NOT cloud) → real multi-item recognition → plate
+  // builder pre-filled with each detected food (each keeps its own calories).
+  async function aiDetectPlate(auto = false) {
+    const b64 = shotB64Ref.current;
+    const photoUri = (plateOpen ? platePhoto : pending?.photoUri) || null;
+    console.log('[aiDetect] start, auto=', auto, 'hasB64=', !!b64);
+    if (!b64) {
+      if (!auto) Alert.alert('Scan first', 'Please SCAN a plate, then tap Smart-detect.');
+      else setPlateNote('Tap each food on your plate below — each logs with its own calories.');
+      return;
+    }
+    setAiBusy(true);
+    try {
+      const items = await detectFoodsVision(b64);
+      console.log('[aiDetect] items:', JSON.stringify(items));
+      if (!items.length) {
+        setPlateAuto(false);
+        setPlateNote('Local AI found no items in the photo — tap each food on your plate below.');
+        if (!auto) Alert.alert('Local AI', 'No items came back. Try a clearer photo, or tap the palette below.');
+        return;
+      }
+      const named = items.map(i => i.name).join(', ');
+      openPlateBuilder(
+        items.map(i => ({ name: i.name, count: i.count })),
+        photoUri,
+        `Local AI detected: ${named}. Review, adjust counts, add/remove — each item logs with its own calories.`,
+        false
+      );
+    } catch (e) {
+      const msg = String(e?.message || e);
+      console.log('[aiDetect] error:', msg);
+      setPlateAuto(false);
+      const fallback = msg === 'no-vision-model'
+        ? 'No vision model in Ollama. On the PC run  ollama pull qwen2.5vl:3b  then rescan. Meanwhile, tap each food below.'
+        : 'Could not reach the local vision model (is Ollama running + USB bridged?). Tap each food on your plate below.';
+      setPlateNote(fallback);
+      if (!auto) Alert.alert('Local AI unavailable', fallback);
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
+  // Multi-food plate confirmed → log EACH item separately, each with its own
+  // calories and its own personalized risk assessment.
+  async function onConfirmPlate(items) {
+    setPlateOpen(false);
+    const photoUri = platePhoto;
+    setPlateItems([]); setPlatePhoto(null); setPlateNote(null);
+    if (!items || !items.length) return;
+    setScanning(true);
+    setError(null);
+    const h = health || (await getHealthMetrics().catch(() => null));
+    if (h && !health) setHealth(h);
+
+    try {
+      const newEntries = [];
+      let running = totals.calories;   // running daily total for budget-aware verdicts
+      let hero = null, heroCals = -1;  // representative item for the AR panel / card
+
+      for (let i = 0; i < items.length; i++) {
+        const { name, count } = items[i];
+        let nutrition = getNutritionOffline(name);
+        if (!nutrition) { try { nutrition = await getNutrition(name); } catch (_) {} }
+        if (!nutrition) continue; // no data for this item — skip rather than show 0 kcal
+
+        const baseGrams = nutrition.portionGrams != null ? nutrition.portionGrams : 100;
+        const c = Math.max(1, count);
+        nutrition.baseGrams = baseGrams;
+        nutrition.countDetected = c;
+        nutrition.sizeMult = 1;
+        if (c > 1) nutrition.name = `${c} × ${nutrition.name}`;
+        Object.assign(nutrition, applyPortion(nutrition, baseGrams * c));
+        nutrition.portionLabel = portionLabelOf(nutrition);
+        nutrition.recognizedBy = 'On-device (plate)';
+        nutrition.photoUri = photoUri;
+
+        const assess = assessForUser(nutrition, h, user, { caloriesToday: running, goal }, env);
+        const food = { ...nutrition, ...assess, health: h };
+        const consumed = computeConsumed(food);
+        running += consumed.calories;
+
+        const id = `${Date.now()}-${i}`;
+        newEntries.push({
+          id, name: food.name, consumed,
+          riskLevel: food.riskLevel, time: nowTime(),
+          recognizedBy: food.recognizedBy,
+        });
+        if (consumed.calories > heroCals) { heroCals = consumed.calories; hero = { ...food, logId: id }; }
+      }
+
+      if (!newEntries.length) {
+        setError('None of the detected items had nutrition data — try Pick.');
+        return;
+      }
+
+      // Newest first, matching the single-scan log order.
+      setLog(prev => {
+        const next = [...newEntries.reverse(), ...prev];
+        persistLog(next);
+        return next;
+      });
+      if (hero) { setLastFood(hero); setScanToken(t => t + 1); }
+
+      const totalCals = newEntries.reduce((a, e) => a + e.consumed.calories, 0);
+      const lines = newEntries.map(e => `• ${e.name} — ${e.consumed.calories} kcal`).join('\n');
+      Alert.alert(`Logged ${newEntries.length} items · ${totalCals} kcal`, lines);
+    } catch (e) {
+      setError(String(e.message || e));
+    } finally {
+      setScanning(false);
+    }
   }
 
   async function onPickFood(name) {
@@ -596,10 +843,25 @@ export default function App() {
           </View>
         </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.profileChip, { borderColor: prof.accent }]} onPress={() => setIntakeOpen(true)}>
-          <Text style={styles.profileIcon}>{prof.icon}</Text>
-          <Text style={[styles.profileText, { color: prof.accent }]}>{prof.label}</Text>
-        </TouchableOpacity>
+        <View style={styles.topRight}>
+          <TouchableOpacity style={styles.envChip} onPress={() => setEnvOpen(true)} activeOpacity={0.85}>
+            {env ? (
+              <>
+                <Text style={styles.envIcon}>{env.weatherIcon}</Text>
+                <Text style={styles.envText}>{env.tempF != null ? `${env.tempF}°` : '—'}</Text>
+                {env.aqi != null && (
+                  <Text style={[styles.envAqi, env.aqiCat && { color: env.aqiCat.color }]}>AQI {env.aqi}</Text>
+                )}
+              </>
+            ) : (
+              <Text style={styles.envIcon}>🌦</Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.profileChip, { borderColor: prof.accent }]} onPress={() => setIntakeOpen(true)}>
+            <Text style={styles.profileIcon}>{prof.icon}</Text>
+            <Text style={[styles.profileText, { color: prof.accent }]}>{prof.label}</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* ---- Last-scan card (tap to open full nutrition) ---- */}
@@ -701,10 +963,34 @@ export default function App() {
         photoUri={pending?.photoUri}
         searchList={SEARCH_FOODS}
         region={region}
-        onRegionChange={changeRegion}
+        onRegionChange={changeScanRegion}
         onConfirm={onConfirmFood}
         onRescan={onRescan}
+        onSplit={onSplitToPlate}
+        onAiDetect={aiDetectPlate}
+        aiBusy={aiBusy}
         onClose={() => { setConfirmOpen(false); setPending(null); }}
+      />
+      <ConfirmPlate
+        visible={plateOpen}
+        items={plateItems}
+        photoUri={platePhoto}
+        searchList={SEARCH_FOODS}
+        quickAdd={PRODUCE_PALETTE}
+        note={plateNote}
+        autoDetect={plateAuto}
+        onConfirm={onConfirmPlate}
+        onRescan={onRescan}
+        onAiDetect={aiDetectPlate}
+        aiBusy={aiBusy}
+        onClose={() => { setPlateOpen(false); setPlateItems([]); setPlatePhoto(null); setPlateNote(null); setPlateAuto(false); }}
+      />
+      <EnvironmentPanel
+        visible={envOpen}
+        onClose={() => setEnvOpen(false)}
+        user={user}
+        food={lastFood}
+        onSaveZip={saveZip}
       />
 
       {/* ---- Pick-food modal ---- */}
@@ -773,6 +1059,11 @@ const styles = StyleSheet.create({
   },
   profileIcon: { fontSize: 14 },
   profileText: { fontSize: 12, fontWeight: '800' },
+  topRight:    { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  envChip:     { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(14,17,22,0.82)', borderRadius: 20, paddingVertical: 7, paddingHorizontal: 10, borderWidth: 1, borderColor: C.line },
+  envIcon:     { fontSize: 14 },
+  envText:     { color: C.text, fontSize: 12, fontWeight: '800' },
+  envAqi:      { color: C.textDim, fontSize: 10, fontWeight: '700' },
 
   lastCard: {
     position: 'absolute', left: 12, right: 12, bottom: 108,

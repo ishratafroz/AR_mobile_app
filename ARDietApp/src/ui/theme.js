@@ -58,6 +58,35 @@ export const ALLERGENS = [
   { key: 'soy',       label: 'Soy',       icon: '🫘' },
 ];
 
+// Religion / dietary-tradition (drives the food-permissibility filter — e.g. a
+// Hindu user sees beef flagged AVOID with a suggested alternative).
+export const RELIGIONS = [
+  { key: 'none',      label: 'No restriction', icon: '🍽' },
+  { key: 'hindu',     label: 'Hindu',          icon: '🕉' },
+  { key: 'muslim',    label: 'Muslim (Halal)', icon: '☪️' },
+  { key: 'jewish',    label: 'Jewish (Kosher)',icon: '✡️' },
+  { key: 'jain',      label: 'Jain',           icon: '🤲' },
+  { key: 'buddhist',  label: 'Buddhist',       icon: '☸️' },
+  { key: 'christian', label: 'Christian',      icon: '✝️' },
+  { key: 'vegetarian',label: 'Vegetarian',     icon: '🥗' },
+  { key: 'vegan',     label: 'Vegan',          icon: '🌱' },
+];
+
+// Past / chronic diseases the user enters manually. Feeds the 5-year impact
+// projection on top of the current conditions list.
+export const PAST_DISEASES = [
+  { key: 'heart_attack', label: 'Heart attack',     icon: '💔' },
+  { key: 'stroke',       label: 'Stroke',           icon: '🧠' },
+  { key: 'kidney',       label: 'Kidney disease',   icon: '🫘' },
+  { key: 'fatty_liver',  label: 'Fatty liver',      icon: '🫁' },
+  { key: 'cancer',       label: 'Cancer',           icon: '🎗' },
+  { key: 'thyroid',      label: 'Thyroid disorder', icon: '🦋' },
+  { key: 'gout',         label: 'Gout',             icon: '🦶' },
+  { key: 'obesity',      label: 'Obesity',          icon: '⚖️' },
+  { key: 'gallstones',   label: 'Gallstones',       icon: '🪨' },
+  { key: 'anemia',       label: 'Anemia',           icon: '🩸' },
+];
+
 // Use-case profiles (Goal 3). Each retunes the daily goal + what the UI emphasizes.
 export const PROFILES = {
   general:  { key: 'general',  label: 'General',       icon: '🍎', goal: 2000, accent: '#2E7BFF', tagline: 'Balanced tracking' },

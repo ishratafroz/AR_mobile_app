@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { Sheet } from './Sheet';
-import { C, PROFILES, SEX_OPTIONS, CONDITIONS, ALLERGENS, BLOOD_GROUPS } from './theme';
+import { C, PROFILES, SEX_OPTIONS, CONDITIONS, ALLERGENS, BLOOD_GROUPS, RELIGIONS, PAST_DISEASES } from './theme';
 import { REGIONS } from '../data/Cuisines';
 
 // Full health intake (recommendation engine). Captures who the user is so the
@@ -10,6 +10,10 @@ export const EMPTY_USER = {
   name: '',
   age: '', sex: null, heightCm: '', weightKg: '',
   focus: 'general', conditions: [], allergies: [], dailyGoal: 2000,
+  // Religion / dietary tradition (food-permissibility filter) + location.
+  religion: 'none',
+  zip: '',            // ZIP/postal code — drives weather, air quality, water advisory
+  pastDiseases: [],   // manually-entered past/chronic diseases (5-year projection)
   // Vitals & labs (used by the clinical-aware recommendation layer)
   bloodGroup: null,
   glucose: '',        // last fasting blood sugar, mg/dL
@@ -136,6 +140,22 @@ export function HealthIntake({ visible, onClose, user, onSave, username, onLogou
           ))}
         </View>
 
+        {/* religion / dietary tradition */}
+        <Text style={s.section}>Religion / dietary tradition</Text>
+        <Text style={s.hint}>Foods your faith avoids are flagged AVOID with a permissible alternative (e.g. beef for Hindu users).</Text>
+        <View style={s.chips}>
+          {RELIGIONS.map(r => (
+            <Chip key={r.key} label={`${r.icon} ${r.label}`} active={form.religion === r.key}
+              accent={C.purple} onPress={() => set('religion', r.key)} />
+          ))}
+        </View>
+
+        {/* location / ZIP — drives weather, air quality, water advisory */}
+        <Text style={s.section}>Your ZIP code</Text>
+        <Text style={s.hint}>Used for local weather, air quality, tap-water advisory and "find this food nearby". Stays on your phone.</Text>
+        <TextInput style={s.input} value={String(form.zip)} onChangeText={(t) => set('zip', t.replace(/[^0-9]/g, '').slice(0, 5))}
+          keyboardType="number-pad" placeholder="e.g. 76203" placeholderTextColor={C.textFaint} />
+
         {/* conditions */}
         <Text style={s.section}>Medical conditions</Text>
         <Text style={s.hint}>Tap any that apply — sharpens the verdict.</Text>
@@ -143,6 +163,16 @@ export function HealthIntake({ visible, onClose, user, onSave, username, onLogou
           {CONDITIONS.map(c => (
             <Chip key={c.key} label={`${c.icon} ${c.label}`} active={form.conditions.includes(c.key)}
               accent={C.red} onPress={() => toggle('conditions', c.key)} />
+          ))}
+        </View>
+
+        {/* past / chronic diseases (manual) — feeds the 5-year impact projection */}
+        <Text style={s.section}>Past / chronic diseases</Text>
+        <Text style={s.hint}>Manually add your medical history — used to project a 5-year impact for risky foods.</Text>
+        <View style={s.chips}>
+          {PAST_DISEASES.map(d => (
+            <Chip key={d.key} label={`${d.icon} ${d.label}`} active={form.pastDiseases.includes(d.key)}
+              accent={C.amber} onPress={() => toggle('pastDiseases', d.key)} />
           ))}
         </View>
 

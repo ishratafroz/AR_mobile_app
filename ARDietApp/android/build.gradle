@@ -27,6 +27,21 @@ buildscript {
     }
 }
 
+// Force EVERY Android module (libraries like react-native-image-picker default to
+// compileSdk 35) onto compileSdk 34 + build-tools 34.0.0. AGP 7.4.2's aapt2 can't parse
+// API 35's sparse resources (RES_TABLE_TYPE_TYPE overlap) — which breaks the release-only
+// :verifyReleaseResources task (debug skips it, which is why debug built fine).
+subprojects { subproject ->
+    afterEvaluate {
+        if (subproject.plugins.hasPlugin('com.android.library') || subproject.plugins.hasPlugin('com.android.application')) {
+            subproject.android {
+                compileSdkVersion 34
+                buildToolsVersion '34.0.0'
+            }
+        }
+    }
+}
+
 allprojects {
     configurations.all {
         resolutionStrategy {

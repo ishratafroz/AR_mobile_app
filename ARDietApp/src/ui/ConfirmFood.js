@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, Image, TextInput, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, Image, TextInput, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator } from 'react-native';
 import { Sheet } from './Sheet';
 import { C } from './theme';
 import { REGIONS, regionFoods } from '../data/Cuisines';
@@ -17,7 +17,7 @@ const QUICK_FOODS = [
 // candidates + quick chips + a search box and let the user pick in one tap.
 // A cuisine selector biases recognition and tailors the quick-pick chips so
 // non-Western / less-popular regional dishes are one tap to log correctly.
-export function ConfirmFood({ visible, onClose, candidates = [], photoUri, searchList = [], region = 'global', onRegionChange, onConfirm, onRescan }) {
+export function ConfirmFood({ visible, onClose, candidates = [], photoUri, searchList = [], region = 'global', onRegionChange, onConfirm, onRescan, onSplit, onAiDetect, aiBusy }) {
   const [q, setQ] = useState('');
 
   useEffect(() => { if (visible) setQ(''); }, [visible]);
@@ -59,7 +59,7 @@ export function ConfirmFood({ visible, onClose, candidates = [], photoUri, searc
             <View style={{ flex: 1 }}>
               <Text style={s.candName}>{c.name}</Text>
               <Text style={[s.candMeta, !c.hasNutrition && { color: C.amber }]}>
-                {c.score > 0 ? `${Math.round(c.score * 100)}% confidence` : 'alternative guess'}
+                {c.suggested ? 'cuisine suggestion' : c.score > 0 ? `${Math.round(c.score * 100)}% confidence` : 'alternative guess'}
                 {c.hasNutrition ? ' · nutrition ready' : ' · no offline data'}
               </Text>
             </View>
@@ -90,6 +90,20 @@ export function ConfirmFood({ visible, onClose, candidates = [], photoUri, searc
           </TouchableOpacity>
         ))}
 
+        {onAiDetect && (
+          <TouchableOpacity style={s.ai} onPress={() => onAiDetect(false)} disabled={aiBusy} activeOpacity={0.85}>
+            {aiBusy
+              ? <ActivityIndicator color={C.purple} />
+              : <Text style={s.aiText}>✨  Smart-detect every item (local AI on your PC)</Text>}
+          </TouchableOpacity>
+        )}
+
+        {onSplit && (
+          <TouchableOpacity style={s.split} onPress={onSplit} activeOpacity={0.85}>
+            <Text style={s.splitText}>🍱  Several foods on the plate? List them separately</Text>
+          </TouchableOpacity>
+        )}
+
         <TouchableOpacity style={s.rescan} onPress={onRescan} activeOpacity={0.85}>
           <Text style={s.rescanText}>↻  Rescan</Text>
         </TouchableOpacity>
@@ -119,6 +133,10 @@ const s = StyleSheet.create({
   chips:    { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 4 },
   chip:     { borderWidth: 1, borderColor: C.line, backgroundColor: C.surface, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 9 },
   chipText: { color: C.textDim, fontSize: 14, fontWeight: '600', textTransform: 'capitalize' },
-  rescan:   { borderWidth: 1, borderColor: C.line, borderRadius: 14, paddingVertical: 13, alignItems: 'center', marginTop: 18 },
+  ai:       { borderWidth: 1, borderColor: C.purple, borderRadius: 14, paddingVertical: 13, alignItems: 'center', marginTop: 18, backgroundColor: C.purple + '14' },
+  aiText:   { color: C.purple, fontSize: 14, fontWeight: '800' },
+  split:    { borderWidth: 1, borderColor: C.blue, borderRadius: 14, paddingVertical: 13, alignItems: 'center', marginTop: 12, backgroundColor: C.blue + '14' },
+  splitText:{ color: C.blue, fontSize: 14, fontWeight: '800' },
+  rescan:   { borderWidth: 1, borderColor: C.line, borderRadius: 14, paddingVertical: 13, alignItems: 'center', marginTop: 12 },
   rescanText:{ color: C.textDim, fontSize: 15, fontWeight: '700' },
 });
